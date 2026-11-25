@@ -11,6 +11,9 @@ const ABANDONED_MS = 5 * 60_000;
 const WAIT_MS = 90_000;
 const HEARTBEAT_MS = 5_000;
 
+// Windows can report EPERM while a removed lock directory is still delete-pending.
+const isWindowsPermissionError = (error: NodeJS.ErrnoException): boolean => process.platform === 'win32' && error.code === 'EPERM';
+
 export interface FileLock {
   release: () => Promise<void>;
   assertHeld: Fence;
@@ -50,8 +53,10 @@ export async function acquireFileLock(file: string, options: { waitMs?: number }
   };
   const deadline = Date.now() + (options.waitMs ?? WAIT_MS);
   for (;;) {
+    let blockedError: NodeJS.ErrnoException | undefined;
     const created = await fs.mkdir(dir, { mode: 0o700 }).then(() => true, (error: NodeJS.ErrnoException) => {
-      if (error.code !== 'EEXIST') throw error;
+      if (error.code !== 'EEXIST' && !isWindowsPermissionError(error)) throw error;
+      blockedError = error;
       return false;
     });
     if (created) {
@@ -73,21 +78,30 @@ export async function acquireFileLock(file: string, options: { waitMs?: number }
         }, { stage: dir }),
       };
     }
-    try {
-      const seen = await fs.stat(dir);
-      const age = Math.abs(Date.now() - seen.mtimeMs);
-      if (age > FRESH_MS && (age > ABANDONED_MS || await ownerGone())) {
-        const displaced = `${dir}.stale-${token}`;
-        await fs.rename(dir, displaced);
-        const moved = await fs.stat(displaced);
-        if (moved.dev === seen.dev && moved.ino === seen.ino && moved.mtimeMs === seen.mtimeMs) await fs.rm(displaced, { recursive: true, force: true });
-        else await fs.rename(displaced, dir).catch(() => fs.rm(displaced, { recursive: true, force: true }));
-        continue;
+    // Only inspect/reclaim a directory known to exist. EPERM alone never grants ownership.
+    if (blockedError?.code === 'EEXIST') {
+      try {
+        const seen = await fs.stat(dir);
+        const age = Math.abs(Date.now() - seen.mtimeMs);
+        if (age > FRESH_MS && (age > ABANDONED_MS || await ownerGone())) {
+          const displaced = `${dir}.stale-${token}`;
+          await fs.rename(dir, displaced);
+          const moved = await fs.stat(displaced);
+          if (moved.dev === seen.dev && moved.ino === seen.ino && moved.mtimeMs === seen.mtimeMs) await fs.rm(displaced, { recursive: true, force: true });
+          else await fs.rename(displaced, dir).catch(() => fs.rm(displaced, { recursive: true, force: true }));
+          continue;
+        }
+      } catch (error) {
+        const failure = error as NodeJS.ErrnoException;
+        if (isWindowsPermissionError(failure)) blockedError = failure;
+        else if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(failure.code ?? '')) throw error;
       }
-    } catch (error) {
-      if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
     }
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${dir}`);
+    if (Date.now() > deadline) {
+      // Keep persistent permission failures diagnosable, rather than hiding them as contention.
+      if (blockedError && isWindowsPermissionError(blockedError)) throw blockedError;
+      throw new Error(`timed out waiting for ${dir}`);
+    }
     await new Promise(resolve => setTimeout(resolve, 100));
   }
 }

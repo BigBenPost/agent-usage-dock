@@ -17,6 +17,7 @@ const EXPECTED_FILES = [
   'extension/dist/dshWorker.js',
   'extension/dist/extension.js',
   'extension/dist/offline.js',
+  'extension/dist/usageWorker.js',
   'extension/LICENSE.txt',
   'extension/media/gemini.svg',
   'extension/media/gemini.woff',
@@ -24,7 +25,7 @@ const EXPECTED_FILES = [
   'extension/package.json',
   'extension/readme.md',
 ];
-const BUNDLES = ['extension/dist/cli.js', 'extension/dist/dshWorker.js', 'extension/dist/extension.js'];
+const BUNDLES = ['extension/dist/usageWorker.js', 'extension/dist/cli.js', 'extension/dist/dshWorker.js', 'extension/dist/extension.js'];
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 const CRC_TABLE = Uint32Array.from({ length: 256 }, (_, n) => {

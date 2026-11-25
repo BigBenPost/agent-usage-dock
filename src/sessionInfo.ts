@@ -39,12 +39,12 @@ async function knownFile(known: Record<string, FileState> | undefined, roots: st
  * Finds the log file of a session, or undefined when it has been deleted. Paths the scanner recorded in `known` are tried
  * first; the log folders are walked only when none of them is still there.
  */
-export async function findSessionLog(source: Source, id: string, antigravityBrain = ANTIGRAVITY_BRAIN_ROOT, homes: { claudeHome?: string; codexHome?: string } = {}, known?: Record<string, FileState>): Promise<string | undefined> {
+export async function findSessionLog(source: Source, id: string, antigravityBrain = ANTIGRAVITY_BRAIN_ROOT, homes: { claudeHome?: string; codexHome?: string } = {}, known?: Record<string, FileState>, list: (root: string) => Promise<string[]> = listJsonl): Promise<string | undefined> {
   if (!isSafeSessionId(id)) return undefined;
   if (source === 'claude') {
     const root = claudeProjects(claudeHome(homes.claudeHome));
     const name = `${id}.jsonl`;
-    return await knownFile(known, [root], base => base === name) ?? (await listJsonl(root)).find(file => path.basename(file) === name);
+    return await knownFile(known, [root], base => base === name) ?? (await list(root)).find(file => path.basename(file) === name);
   }
   if (source === 'codex') {
     const roots = codexLogRoots(codexHome(homes.codexHome));
@@ -52,13 +52,14 @@ export async function findSessionLog(source: Source, id: string, antigravityBrai
     const recorded = await knownFile(known, roots, base => base.endsWith(suffix));
     if (recorded) return recorded;
     for (const root of roots) {
-      const found = (await listJsonl(root)).find(file => path.basename(file).endsWith(suffix));
+      const found = (await list(root)).find(file => path.basename(file).endsWith(suffix));
       if (found) return found;
     }
     return undefined;
   }
   if (source !== 'antigravity') return undefined;
-  const file = path.join(antigravityBrain, id, '.system_generated', 'logs', 'transcript.jsonl');
+  const recorded = Object.entries(known ?? {}).find(([file, state]) => state.session === id && file.startsWith(antigravityBrain + path.sep) && file.endsWith('transcript.jsonl'))?.[0];
+  const file = recorded ?? path.join(antigravityBrain, id, '.system_generated', 'logs', 'transcript.jsonl');
   try {
     if ((await fs.stat(file)).isFile()) return file;
   } catch {

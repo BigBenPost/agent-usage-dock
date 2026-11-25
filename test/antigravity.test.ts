@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { test } from 'node:test';
 import {
   decodeProtoFields,
+  modelFromEnum,
   normalizeAntigravityModel,
   parseAntigravityLine,
   parseDbStepMetadata,
@@ -24,6 +25,11 @@ test('normalizeAntigravityModel normalizes Gemini models and sanitizes strings',
   assert.equal(normalizeAntigravityModel('Gemini 1.5 Pro'), 'gemini-1.5-pro');
   assert.equal(normalizeAntigravityModel('gemini-flash-lite'), 'gemini-flash-lite');
   assert.equal(normalizeAntigravityModel('gemini-1.5-flash'), 'gemini-1.5-flash');
+});
+
+test('modelFromEnum maps Antigravity protobuf model ids', () => {
+  assert.equal(modelFromEnum(1525), 'gemini-4-hydrogen');
+  assert.equal(modelFromEnum(1526), 'gemini-4-hydrogen-medium');
 });
 
 test('parseAntigravityLine correctly parses steps with input, output, and cache read tokens', () => {

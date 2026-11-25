@@ -124,6 +124,7 @@ export async function loadArchive(file: string, allowLegacy = true): Promise<Arc
 
 /** Writes the full request snapshot. The caller holds the store lock and has already decided that something changed. */
 export async function saveArchive(file: string, data: Pick<StoreData, 'days' | 'records' | 'legacy' | 'hiddenSessions'>, assertHeld: Fence): Promise<void> {
+  if (!isDays(data.days)) throw new Error('Invalid accounting totals; refusing to archive');
   const ledger: ArchiveLedger = { version: 3, updatedAt: new Date().toISOString(), days: data.days, records: data.records, ...splitBaseline(data.legacy), hiddenSessions: data.hiddenSessions };
   await publishPrivateFile(currentArchiveFile(file), JSON.stringify(ledger), assertHeld);
 }

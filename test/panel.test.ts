@@ -38,10 +38,10 @@ test('the page lists sessions with their cost and escapes names from the logs', 
   assert.match(html, /&#60;img src=x/);
 });
 
-test('the header names the dashboard and says whom to contact, with a mailto link', () => {
+test('the header names the dashboard and offers a contact email, with a mailto link', () => {
   const html = body(data());
   assert.match(html, /<h1><svg class="brand" role="img" aria-label="Google Gemini"[^>]*>.*<\/svg><span class="usage">agent-usage-dock<\/span><\/h1>/s);
-  assert.match(html, /Have a problem\? Contact <a href="mailto:xijue\.zhang@rakuten\.com"[^>]*>xijue\.zhang@rakuten\.com<\/a>/);
+  assert.match(html, /Have a problem\? Contact <a href="mailto:zhang\.xijue@u\.nus\.edu"[^>]*>zhang\.xijue@u\.nus\.edu<\/a>/);
 });
 
 test('each session card shows all five token counts with their exact values, and a totals card sums them', () => {

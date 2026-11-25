@@ -55,19 +55,36 @@ export function cursorRecords(ledger: { events: unknown[] }): UsageRecord[] {
 
 const CURSOR_ID = /^(cursor:\d+:[0-9a-f]{10})(?::\d+)?$/;
 
-/**
- * The id a request of Cursor is kept under when it joins records already held. Requests with the same time, model and counts share
- * a base id and take `:1`, `:2`, ... after it in the order the ledger lists them, and a later snapshot may list them in another
- * order. A request whose id is held by another conversation moves to the next id that is free or already holds its own conversation,
- * so conversations are never merged or swapped. A copy that does not know its conversation joins whatever holds the id.
- */
-export function cursorSlot(held: Record<string, UsageRecord>, rec: UsageRecord): string {
-  const base = CURSOR_ID.exec(rec.id)?.[1];
-  const prior = held[rec.id];
-  if (!base || !prior || !prior.session || !rec.session || prior.session === rec.session) return rec.id;
-  for (let n = 0; ; n++) {
-    const id = n ? `${base}:${n}` : base;
-    const other = held[id];
-    if (!other || !other.session || other.session === rec.session) return id;
+/** One-to-one matching within an import: a held request may satisfy at most one incoming request. */
+export class CursorMatcher {
+  private readonly used = new Set<string>();
+  private readonly groups = new Map<string, string[]>();
+  constructor(private readonly held: Record<string, UsageRecord>) {
+    for (const id of Object.keys(held)) {
+      const base = CURSOR_ID.exec(id)?.[1];
+      if (base) {
+        let group = this.groups.get(base);
+        if (!group) this.groups.set(base, group = []);
+        group.push(id);
+      }
+    }
+  }
+
+  slot(rec: UsageRecord): string {
+    const base = CURSOR_ID.exec(rec.id)?.[1];
+    if (!base) return rec.id;
+    const group = this.groups.get(base) ?? [];
+    const slots = group.filter(id => !this.used.has(id));
+    let id = slots.find(id => this.held[id].session === rec.session)
+      ?? slots.find(id => !this.held[id].session || !rec.session);
+    if (!id) {
+      let n = 0;
+      id = base;
+      while (this.held[id] || this.used.has(id)) id = `${base}:${++n}`;
+      group.push(id);
+      this.groups.set(base, group);
+    }
+    this.used.add(id);
+    return id;
   }
 }

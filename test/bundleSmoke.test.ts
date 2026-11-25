@@ -29,7 +29,7 @@ before(async () => {
 after(() => fs.rm(shared, { recursive: true, force: true, maxRetries: 3, retryDelay: 20 }));
 
 test('the build writes the Node bundles with a version stamp and the offline bundle with no source maps', async () => {
-  assert.deepEqual((await fs.readdir(built)).sort(), ['cli.js', 'dshWorker.js', 'extension.js', 'offline.js']);
+  assert.deepEqual((await fs.readdir(built)).sort(), ['cli.js', 'dshWorker.js', 'extension.js', 'offline.js', 'usageWorker.js']);
   for (const name of ['cli.js', 'dshWorker.js', 'extension.js']) {
     const text = await fs.readFile(path.join(built, name), 'utf8');
     assert.ok(text.startsWith(`// agent-usage-dock ${version}\n`), name);
@@ -44,7 +44,7 @@ test('--sourcemap writes maps next to the Node bundles and unknown options are r
   const projectMap = path.join(project, 'dist', 'cli.js.map');
   const mapBefore = existsSync(projectMap);
   assert.equal(build(outdir, '--sourcemap').status, 0);
-  assert.deepEqual((await fs.readdir(outdir)).sort(), ['cli.js', 'cli.js.map', 'dshWorker.js', 'dshWorker.js.map', 'extension.js', 'extension.js.map', 'offline.js']);
+  assert.deepEqual((await fs.readdir(outdir)).sort(), ['cli.js', 'cli.js.map', 'dshWorker.js', 'dshWorker.js.map', 'extension.js', 'extension.js.map', 'offline.js', 'usageWorker.js', 'usageWorker.js.map']);
   assert.match(await fs.readFile(path.join(outdir, 'cli.js'), 'utf8'), /\/\/# sourceMappingURL=cli\.js\.map/);
   const unknown = spawnSync(process.execPath, [path.join(project, 'esbuild.mjs'), '--minify'], { cwd: project, encoding: 'utf8' });
   assert.equal(unknown.status, 2);
@@ -80,4 +80,21 @@ test('the smoke test rejects a bundle that is stamped for another version, keeps
   const missing = spawnSync(process.execPath, [smoke, path.join(dir, 'absent.js')], { encoding: 'utf8' });
   assert.equal(missing.status, 1);
   assert.match(missing.stderr, /cannot read/);
+});
+
+test('the packaged usage worker loads the ledger without vscode and returns only UI facts', async () => {
+  const home = await temporaryDirectory('bundle-usage-worker-');
+  const run = spawnSync(process.execPath, ['-e', `
+    const {Worker}=require('worker_threads');
+    const worker=new Worker(${JSON.stringify(path.join(built, 'usageWorker.js'))});
+    const timer=setTimeout(()=>{console.error('worker timeout');process.exit(1)},10000);
+    worker.once('error',error=>{console.error(error);process.exit(1)});
+    worker.once('message',message=>{
+      if(message.error || !message.reply?.data || 'records' in message.reply.data) {console.error(message);process.exitCode=1;}
+      clearTimeout(timer);worker.postMessage({type:'dispose'});
+    });
+    worker.postMessage({id:1,type:'load'});
+  `], { env: { ...process.env, AGY_TOKEN_TRACKER_HOME: home }, encoding: 'utf8', timeout: 15000 });
+  assert.equal(run.error, undefined);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
 });

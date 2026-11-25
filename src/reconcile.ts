@@ -6,6 +6,25 @@ import { codexAliases } from './collectors/codex';
 
 /** One deterministic ordering for incremental scans, imports and archive recovery. */
 export function preferredRecord(a: UsageRecord, b: UsageRecord): UsageRecord {
+  const winner = preferredFacts(a, b);
+  if (a.source !== 'antigravity' || b.source !== 'antigravity') return winner;
+  const meta = preferredMetadata(a, b);
+  if (!meta) return winner;
+  return { ...winner, title: meta.title, project: meta.project,
+    evidence: { ...(winner.evidence ?? meta.evidence!), antigravityMetadataAt: meta.evidence!.antigravityMetadataAt } };
+}
+
+function preferredMetadata(a: UsageRecord, b: UsageRecord): UsageRecord | undefined {
+  const at = a.evidence?.antigravityMetadataAt ?? -1;
+  const bt = b.evidence?.antigravityMetadataAt ?? -1;
+  if (at < 0 && bt < 0) return undefined;
+  // Metadata may be newer even when its request counters lose reconciliation.
+  // A missing row has no evidence; a present row with empty fields explicitly clears them.
+  return at !== bt ? (at > bt ? a : b)
+    : JSON.stringify([a.title ?? null, a.project ?? null]) >= JSON.stringify([b.title ?? null, b.project ?? null]) ? a : b;
+}
+
+function preferredFacts(a: UsageRecord, b: UsageRecord): UsageRecord {
   const rank = (r: UsageRecord) => [r.evidence?.kind === 'database' ? 2 : r.evidence?.kind === 'transcript' ? 1 : 0,
     r.evidence?.revision ?? 0, r.evidence?.parserVersion ?? 0, r.tokens.output, r.tokens.input, r.tokens.cacheRead, r.tokens.cacheWrite, r.tokens.cacheWrite1h,
     r.model === 'unknown-model' ? 0 : 1];
@@ -188,6 +207,14 @@ export function canonicalRecords(records: Record<string, UsageRecord>, codexProb
   return out;
 }
 
+/** Check before addition; rounding an overflowing sum must never become a persisted accounting fact. */
+function addAccounting(target: TokenBucket, value: TokenBucket): void {
+  for (const key of COUNTERS) {
+    if (value[key] > Number.MAX_SAFE_INTEGER - target[key]) throw new Error('Accounting total exceeds safe integer range');
+  }
+  for (const key of COUNTERS) target[key] += value[key];
+}
+
 export function aggregate(records: Record<string, UsageRecord>, legacy?: LegacyBaseline, hidden: Iterable<string> = [], canonical = false): {
   days: Record<string, DayRecord>; sessions: Record<string, SessionRecord>; firstDay?: string;
 } {
@@ -196,16 +223,20 @@ export function aggregate(records: Record<string, UsageRecord>, legacy?: LegacyB
   const sessions: Record<string, SessionRecord> = {};
   const hiddenSessions = new Set(hidden);
   const labelledAt = new Map<string, { title: number; project: number }>();
+  const metadata = new Map<string, UsageRecord>();
   const remaining: Record<string, DayRecord> = JSON.parse(JSON.stringify(legacy?.days ?? {}));
   const remainingSessions: Record<string, SessionRecord> = structuredClone(legacy?.sessions ?? {});
   for (const rec of Object.values(canonical ? records : canonicalRecords(records)).sort((a, b) => compareCodeUnits(a.id, b.id))) {
     const key = accountingKey(rec);
     const bucket = (((days[rec.day] ??= {})[rec.source] ??= {})[key] ??= emptyBucket());
-    bucket.requests++;
-    for (const k of TOKEN_KEYS) bucket[k] += rec.tokens[k];
+    addAccounting(bucket, { requests: 1, ...rec.tokens });
     const ts = rec.ts ?? Date.parse(`${rec.day}T00:00:00Z`);
     if (legacy && ts <= legacy.before) consume(remaining[rec.day]?.[rec.source] ?? {}, rec);
     const sessionKey = `${rec.source}:${rec.session}`;
+    if (rec.source === 'antigravity' && rec.evidence?.antigravityMetadataAt !== undefined) {
+      const prior = metadata.get(sessionKey);
+      metadata.set(sessionKey, prior ? preferredMetadata(prior, rec)! : rec);
+    }
     const older = rec.session ? remainingSessions[sessionKey] : undefined;
     if (older && ts <= older.last) consume(older.days[rec.day] ?? {}, rec);
     if (!rec.session || hiddenSessions.has(sessionKey)) continue;
@@ -216,14 +247,12 @@ export function aggregate(records: Record<string, UsageRecord>, legacy?: LegacyB
     if (rec.title && ts >= at.title) { s.title = rec.title; at.title = ts; }
     if (rec.project && ts >= at.project) { s.project = rec.project; at.project = ts; }
     const sb = ((s.days[rec.day] ??= {})[key] ??= emptyBucket());
-    sb.requests++;
-    for (const k of TOKEN_KEYS) sb[k] += rec.tokens[k];
+    addAccounting(sb, { requests: 1, ...rec.tokens });
   }
   for (const [day, sources] of Object.entries(remaining)) for (const [source, models] of Object.entries(sources)) {
     for (const [model, value] of Object.entries(models ?? {})) {
       const bucket = (((days[day] ??= {})[source as Source] ??= {})[model] ??= emptyBucket());
-      bucket.requests += value.requests;
-      for (const k of TOKEN_KEYS) bucket[k] += value[k];
+      addAccounting(bucket, value);
     }
   }
   // What an older store knew of a session and the logs no longer show: the session stays, with what is left of its totals.
@@ -238,9 +267,16 @@ export function aggregate(records: Record<string, UsageRecord>, legacy?: LegacyB
     if (old.project && !s.project) s.project = old.project;
     for (const { day, model, value } of left) {
       const sb = ((s.days[day] ??= {})[model] ??= emptyBucket());
-      sb.requests += value.requests;
-      for (const k of TOKEN_KEYS) sb[k] += value[k];
+      addAccounting(sb, value);
     }
+  }
+  // Session metadata is authoritative across requests, including old requests
+  // reintroduced by an import after the current metadata was collected.
+  for (const [key, rec] of metadata) {
+    const session = sessions[key];
+    if (!session) continue;
+    if (rec.title !== undefined) session.title = rec.title; else delete session.title;
+    if (rec.project !== undefined) session.project = rec.project; else delete session.project;
   }
   return { days, sessions, firstDay: Object.keys(days).sort()[0] };
 }
@@ -268,6 +304,7 @@ export function usageRecordProblem(value: unknown, id: string): string | undefin
     || !isObject(e.codexAlias) || !isCount(e.codexAlias.total) || e.codexAlias.total === 0 || !Number.isFinite(e.codexAlias.timestamp))) return 'invalid Codex alias';
   if (e?.antigravityModel !== undefined && (r.source !== 'antigravity' || !isObject(e.antigravityModel) ||
     !['transcript', 'database'].includes(e.antigravityModel.kind) || !Number.isFinite(e.antigravityModel.revision) || !isCount(e.antigravityModel.parserVersion))) return 'invalid Antigravity model evidence';
+  if (e?.antigravityMetadataAt !== undefined && (r.source !== 'antigravity' || !isTime(e.antigravityMetadataAt))) return 'invalid Antigravity metadata evidence';
   if (e?.dshCall !== undefined) {
     const call = e.dshCall;
     if (r.source !== 'dsh' || !isSafeSessionId(r.session) || !isObject(call) || call.version !== 1 || !Array.isArray(call.sequences)

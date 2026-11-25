@@ -315,6 +315,11 @@ test('recorded session paths cannot escape the configured root through symlinks'
   const states: Record<string, FileState> = {};
   await scanDsh(f.home, states);
   assert.equal((await recordedDshSession(states, 'session-fixture', f.home))?.file, await fs.realpath(f.file));
+  const contained = path.join(path.dirname(f.file), 'contained-log');
+  await fs.rename(f.file, contained);
+  await fs.symlink(contained, f.file);
+  await scanDsh(f.home, states);
+  assert.equal((await recordedDshSession(states, 'session-fixture', f.home))?.file, await fs.realpath(contained));
   await fs.rm(f.file); await fs.symlink(outside.file, f.file);
   assert.equal(await recordedDshSession(states, 'session-fixture', f.home), undefined);
 });

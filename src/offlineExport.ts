@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import { readFileSync } from 'fs';
 import * as path from 'path';
 import { recordedDshSession } from './collectors/dsh';
-import type { FileState } from './collectors/lines';
+import { listJsonl, type FileState } from './collectors/lines';
 import type { Config } from './config';
 import { HOVER_STYLE } from './dashboardHover';
 import { OfflineSnapshot, SNAPSHOT_SCHEMA_VERSION, safeJsonForScript, snapshotToConfig } from './offlineSnapshot';
@@ -51,6 +51,14 @@ export async function collectSessionInfos(
   const brain = dataPaths(cfg.antigravityHome).brain;
   const dshRoot = dshHome(cfg.dshHome);
   const concurrency = Math.max(1, Math.min(options.concurrency ?? 4, total));
+  // A promise also coalesces concurrent misses. Keep this index local to one
+  // export so newly created/moved logs are discovered by the next export.
+  const listings = new Map<string, Promise<string[]>>();
+  const listLogs = (root: string): Promise<string[]> => {
+    let pending = listings.get(root);
+    if (!pending) { pending = listJsonl(root); listings.set(root, pending); }
+    return pending;
+  };
   let next = 0;
   let done = 0;
 
@@ -65,7 +73,7 @@ export async function collectSessionInfos(
           const dsh = await recordedDshSession(files, rec.id, dshRoot, undefined, options.signal);
           if (dsh) infos[key] = { file: path.dirname(dsh.file), folder: true, title: dsh.title, firstPrompt: dsh.firstPrompt };
         } else if (isScanned(rec.source)) {
-          const file = await findSessionLog(rec.source, rec.id, brain, cfg, files);
+          const file = await findSessionLog(rec.source, rec.id, brain, cfg, files, listLogs);
           throwIfAborted(options.signal);
           if (file) infos[key] = await readSessionInfo(rec.source, file);
         }

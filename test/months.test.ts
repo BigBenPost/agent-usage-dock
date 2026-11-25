@@ -5,6 +5,11 @@ import { renderBody } from '../src/panelHtml';
 import { Pricing } from '../src/pricing';
 import { pinnedMonth, summarize } from '../src/summary';
 import { DayRecord, emptyBucket, SessionRecord, TokenBucket } from '../src/types';
+import { promises as fs } from 'node:fs';
+import * as path from 'node:path';
+import { UsageStore } from '../src/store';
+import { toCsv } from '../src/summary';
+import { temporaryDirectory } from './temp';
 
 const NOW = Date.parse('2026-10-21T12:00:00Z');
 const cfg: Config = { dashboardTheme: 'light', timeZone: 'UTC', tooltipChart: true, statusBarStyle: 'percent', levelIndicator: 'bar', budgetLimit: 100, warningThreshold: 0.75, criticalThreshold: 0.9, pollIntervalSeconds: 60, correctionFactor: 1, rates: {} };
@@ -80,4 +85,29 @@ test('the header has a month switcher', () => {
   const html = page();
   assert.match(html, /data-menu="month"/);
   assert.match(html, /data-month-select/);
+});
+
+test('imported token-only history stays navigable after saving and reloading, while empty buckets stay hidden', async () => {
+  const root = await temporaryDirectory('token-only-month-');
+  const imported = path.join(root, 'legacy.json');
+  const tokens = { ...emptyBucket(), input: 100, output: 20 };
+  await fs.writeFile(imported, JSON.stringify({ version: 1, days: {
+    '2026-09-01': { claude: { 'claude-sonnet-5-5': tokens } },
+    '2026-08-01': { codex: { 'gpt-5.5': emptyBucket() } },
+  } }));
+  const file = path.join(root, 'usage-v3.json');
+  const store = await UsageStore.load(file);
+  await store.absorb(imported);
+  const loaded = await UsageStore.load(file);
+  const current = summarize(loaded.data, new Pricing(), NOW);
+  assert.deepEqual(current.months, ['2026-09', '2026-10']);
+  assert.deepEqual(current.recorded, ['claude']);
+  const month = pinnedMonth('2026-09', current.months, current.month);
+  assert.equal(month, '2026-09');
+  const history = summarize(loaded.data, new Pricing(), NOW, month);
+  assert.equal(history.totalRequests, 0);
+  assert.equal(history.tokensTotal, 120);
+  assert.ok(history.total > 0);
+  assert.match(renderBody(history, cfg), /September 2026/);
+  assert.match(toCsv(loaded.data.days, new Pricing()), /2026-09-01,claude,claude-sonnet-5-5,0,100,0,0,0,20,/);
 });

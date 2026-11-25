@@ -4,19 +4,18 @@ import * as vscode from 'vscode';
 import { recordedDshSession, type RecordedDshSession } from './collectors/dsh';
 import { archiveDir, backupDir } from './backup';
 import { installCli } from './cliInstall';
-import { Config, ownRates, readConfig, SECTION, settingTarget } from './config';
+import { Config, inheritedRates, ownRates, readConfig, SECTION, settingTarget } from './config';
 import { SessionProvider, UsagePanel } from './panel';
 import { buildOfflineSnapshot, ExportCancelledError, renderOfflineHtml } from './offlineExport';
 import { renderSessionDetail, renderSessionError, renderSessionMissing } from './panelHtml';
-import { claudeHome, codexHome, dataPaths, dshHome, initializeUsageStore, sharedCliFile, sharedDir, sharedStoreFile } from './paths';
+import { dataPaths, dshHome, sharedCliFile, sharedDir, sharedStoreFile } from './paths';
 import { Pricing, type Rate } from './pricing';
 import { rateChoices, rateOverride } from './rateEdit';
 import { UsageStatusBar } from './statusBar';
-import { refreshUsage } from './scan';
+import { UsageRuntime, type UsageSnapshot } from './usageRuntime';
 import { activeSessionKeys } from './sessionActivity';
 import { buildSessionDetail, findSession } from './sessionDetail';
 import { findSessionLog, readSessionInfo } from './sessionInfo';
-import { UsageStore } from './store';
 import { pinnedMonth, summarize, Summary, toCsv } from './summary';
 import { isDisplayZone } from './timeZone';
 import { TOKEN_KEYS, type SessionRecord } from './types';
@@ -33,7 +32,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   let cfg: Config = readConfig();
   let pricing = new Pricing(cfg.rates, cfg.correctionFactor);
-  let store: UsageStore | undefined;
+  const runtime = new UsageRuntime();
+  context.subscriptions.push(runtime);
+  let store: { data: UsageSnapshot } | undefined;
   let summary: Summary | undefined;
   let viewMonth: string | undefined;
   let inFlight: Promise<void> | undefined;
@@ -45,13 +46,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   let loadFailure: string | undefined;
   let reportedFailure = '';
   let lastProblems = '';
-  let pruned = false;
   const cancellation = new AbortController();
   context.subscriptions.push({ dispose: () => cancellation.abort() });
 
   const stamp = () => new Date().toISOString();
   const activeKeys = (): Set<string> => activeSessionKeys(store?.data.files ?? {}, Date.now());
-  const input = (data: UsageStore['data']) => ({ ...data, active: activeKeys(), storage: { ledger: sharedStoreFile(), archive: archiveDir(sharedStoreFile()) } });
+  const input = (data: UsageSnapshot) => ({ ...data, active: activeKeys(), storage: { ledger: sharedStoreFile(), archive: archiveDir(sharedStoreFile()) } });
 
   const dashboard = (): Summary | undefined => (store && summary && viewMonth ? summarize(input(store.data), pricing, Date.now(), viewMonth) : summary);
 
@@ -66,11 +66,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   const loadStore = (): Promise<void> => (loading ??= (async () => {
     try {
-      const opened = await initializeUsageStore(aside => {
+      const opened = await runtime.load();
+      for (const aside of opened.recovered ?? []) {
         log.appendLine('Corrupt store preserved at ' + aside);
         void vscode.window.showWarningMessage('agent-usage-dock: damaged working store preserved; recovering from the archive.');
-      });
-      store = opened;
+      }
+      store = { data: opened.data };
       loadFailure = undefined;
       if (reportedFailure) log.appendLine(`${stamp()} stored usage loaded after an earlier failure`);
       reportedFailure = '';
@@ -90,7 +91,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
   })().finally(() => { loading = undefined; }));
 
-  const ensureStore = async (): Promise<UsageStore | undefined> => {
+  const ensureStore = async (): Promise<{ data: UsageSnapshot } | undefined> => {
     if (!store) await loadStore();
     return store;
   };
@@ -115,17 +116,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     return (warning = shown);
   };
 
-  const pruneFiles = async (current: UsageStore): Promise<void> => {
-    const roots = [dataPaths(cfg.antigravityHome).home, dshHome(cfg.dshHome), claudeHome(cfg.claudeHome), codexHome(cfg.codexHome)];
-    await current.transaction(() => current.pruneFiles(roots), true);
-  };
-
   const runPoll = async (rebuild = false): Promise<void> => {
     const current = await ensureStore();
     if (!current) return;
     const started = Date.now();
     try {
-      const { changed, files, problems, backup } = await refreshUsage(current, sharedStoreFile(), cfg.antigravityHome, rebuild, { ...cfg, source: 'all', signal: cancellation.signal });
+      const reply = await runtime.refresh(cfg, rebuild);
+      current.data = reply.data;
+      const { changed, files, problems, backup } = reply.result!;
+      if (reply.pruneError) log.appendLine(`${stamp()} could not forget logs that are gone: ${reply.pruneError}`);
       if (backup) log.appendLine(`${stamp()} rebuild: history saved to ${backup}`);
       render();
       const unread = problems.join('\n');
@@ -141,10 +140,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       statusBar.showError(err instanceof Error ? err.message : String(err));
       return;
     }
-    if (!pruned) {
-      await pruneFiles(current).then(() => { pruned = true; }, (err) =>
-        log.appendLine(`${stamp()} could not forget logs that are gone: ${err instanceof Error ? err.message : String(err)}`));
-    }
   };
 
   const setTimeZone = (zone: unknown): void => {
@@ -156,7 +151,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   };
 
   let cachedDsh: { id: string; session: RecordedDshSession } | undefined;
-  const dshSession = async (current: UsageStore, id: string) => {
+  const dshSession = async (current: { data: UsageSnapshot }, id: string) => {
     const session = await recordedDshSession(current.data.files, id, dshHome(cfg.dshHome), cachedDsh?.id === id ? cachedDsh.session : undefined, cancellation.signal);
     if (session) cachedDsh = { id, session };
     return session;
@@ -174,9 +169,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const choice = await vscode.window.showQuickPick(choices, { title: 'Configure Rates', placeHolder: 'Choose a model and provider route', matchOnDescription: true, matchOnDetail: true });
     if (!choice) return;
     const labels: Record<keyof Rate, string> = { input: 'Input', output: 'Output', cacheRead: 'Cache read', cacheWrite: 'Cache write', cacheWrite1h: 'Cache write (1h)' };
-    const existing = cfg.rates[choice.key];
-    const inheritedOverrides = { ...cfg.rates };
-    delete inheritedOverrides[choice.key];
+    const rateConfig = vscode.workspace.getConfiguration(SECTION);
+    const existing = ownRates(rateConfig)[choice.key];
+    const inheritedOverrides = inheritedRates(rateConfig, choice.key);
     const fallback = new Pricing(inheritedOverrides).rateFor(choice.model.model, choice.model.source, choice.provider);
     const inherited: Partial<Rate> = {};
     const answers: Partial<Record<keyof Rate, string>> = {};
@@ -325,7 +320,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             const resolvedTheme = themeKind === vscode.ColorThemeKind.Dark || themeKind === vscode.ColorThemeKind.HighContrast ? 'dark' : 'light';
             const pluginVersion = typeof __DOCK_BUNDLE_VERSION__ === 'string'
               ? __DOCK_BUNDLE_VERSION__
-              : (context.extension?.packageJSON as { version?: string } | undefined)?.version ?? '1.3.0';
+              : (context.extension?.packageJSON as { version?: string } | undefined)?.version ?? '1.3.1';
 
             let lastPct = 0;
             const snapshot = await buildOfflineSnapshot(current.data, cfg, {

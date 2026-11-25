@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { test } from 'node:test';
+import { runInNewContext } from 'node:vm';
 import { buildSync } from 'esbuild';
 import { parseHTML } from 'linkedom';
 import { normalizeConfig } from '../src/configValues';
@@ -12,6 +13,7 @@ import { Pricing } from '../src/pricing';
 import { summarize } from '../src/summary';
 import { emptyBucket, type DayRecord, type SessionRecord, type TokenBucket } from '../src/types';
 import { temporaryDirectory } from './temp';
+import type { OfflineSnapshot } from '../src/offlineSnapshot';
 
 const projectRoot = path.resolve(__dirname, '..', '..');
 const NOW = Date.parse('2026-11-22T12:00:00Z');
@@ -32,6 +34,48 @@ function getOfflineBundle(): string {
   }
   return cachedOfflineBundle;
 }
+
+test('offline history stays selected through sorting, filtering, paging, time zones and session details', () => {
+  const snap: OfflineSnapshot = {
+    schemaVersion: 1, pluginVersion: '1.3.1', now: NOW, exportedAt: new Date(NOW).toISOString(),
+    config: { ...normalizeConfig({}), dashboardTheme: 'light', budgetMode: 'tokens', tokenBudgetLimit: 0 },
+    data: {
+      days: { '2026-10-15': { claude: { 'claude-sonnet-5-5': bucket(1, 100, 20) } }, '2026-11-22': { claude: { 'claude-sonnet-5-5': bucket(1, 200, 40) } } },
+      sessions: { 'claude:cross': { source: 'claude', id: 'cross', first: NOW - 40 * 86400_000, last: NOW, days: {
+        '2026-10-15': { 'claude-sonnet-5-5': bucket(1, 1e6, 2e5) },
+        '2026-11-22': { 'claude-sonnet-5-5': bucket(1, 2e6, 4e5) },
+      } } },
+      active: [],
+    },
+    sessionInfos: {},
+  };
+  const messages: { type: string; html: string }[] = [];
+  const win = { dispatchEvent: (event: { data: { type: string; html: string } }) => { messages.push(event.data); } };
+  runInNewContext(getOfflineBundle(), {
+    document: { getElementById: () => ({ textContent: JSON.stringify(snap) }) }, window: win,
+    MessageEvent: class { constructor(_type: string, init: object) { Object.assign(this, init); } },
+  });
+  const host = (win as typeof win & { __DOCK_HOST__: { postMessage(m: object): void } }).__DOCK_HOST__;
+  const selected = () => parseHTML(messages.filter(m => m.type === 'render').at(-1)!.html).document.querySelector('[data-menu="month"] [aria-pressed="true"]')?.getAttribute('data-month');
+  host.postMessage({ type: 'ready' });
+  const author = parseHTML(messages.at(-1)!.html).document.querySelector('[data-focus="contact"]');
+  assert.equal(author?.getAttribute('href'), 'mailto:zhang.xijue@u.nus.edu');
+  assert.equal(author?.parentElement?.textContent, 'Have a problem? Contact zhang.xijue@u.nus.edu');
+  for (const month of ['2026-10', '2026-11', '2026-10']) {
+    host.postMessage({ type: 'setMonth', month });
+    assert.equal(selected(), month);
+    for (const message of [
+      { type: 'setSessionView', view: { sort: 'cost:desc', sources: ['claude'], page: 0 } },
+      { type: 'setSessionView', view: { sort: 'last:desc', sources: [], page: 1 } },
+      { type: 'setTimeZone', zone: 'UTC' }, { type: 'setTimeZone', zone: 'SGT' },
+    ]) { host.postMessage(message); assert.equal(selected(), month); }
+    host.postMessage({ type: 'openSession', key: 'claude:cross' });
+    assert.match(messages.at(-1)!.html, new RegExp(month === '2026-10' ? 'October 2026' : 'November 2026'));
+    host.postMessage({ type: 'closeSession' });
+  }
+  host.postMessage({ type: 'setMonth', month: '1900-01' });
+  assert.equal(selected(), '2026-11');
+});
 
 test('collectSessionInfos gathers details across all sessions, degrades on missing logs, and respects cancellation', async () => {
   const root = await temporaryDirectory('offline-infos-');
@@ -68,6 +112,27 @@ test('collectSessionInfos gathers details across all sessions, degrades on missi
   const aborted = new AbortController();
   aborted.abort();
   await assert.rejects(() => collectSessionInfos(sessions, {}, cfg, { signal: aborted.signal }), ExportCancelledError);
+});
+
+test('one export coalesces missing-log directory walks and a later export discovers newly created logs', async () => {
+  const root = await temporaryDirectory('export-log-index-');
+  const claudeDir = path.join(root, 'claude');
+  const project = path.join(claudeDir, 'projects', 'p');
+  await fs.mkdir(project, { recursive: true });
+  const sessions: Record<string, SessionRecord> = Object.fromEntries(Array.from({ length: 50 }, (_, i) => [`claude:s${i}`,
+    { source: 'claude', id: `s${i}`, first: NOW, last: NOW, days: {} }]));
+  const cfg = { claudeHome: claudeDir, codexHome: path.join(root, 'codex'), antigravityHome: path.join(root, 'agy'), dshHome: path.join(root, 'dsh') };
+  const readdir = fs.readdir;
+  let reads = 0;
+  fs.readdir = ((...args: Parameters<typeof fs.readdir>) => { reads++; return readdir(...args); }) as typeof fs.readdir;
+  try {
+    assert.equal(Object.keys(await collectSessionInfos(sessions, {}, cfg)).length, 0);
+    assert.equal(reads, 2, 'walk projects/ and p/ once despite concurrent misses');
+    await fs.writeFile(path.join(project, 's0.jsonl'), JSON.stringify({ type: 'user', message: { content: 'New log prompt' } }) + '\n');
+    const next = await collectSessionInfos(sessions, {}, cfg);
+    assert.equal(next['claude:s0']?.firstPrompt, 'New log prompt');
+    assert.equal(reads, 4, 'each export gets a fresh index');
+  } finally { fs.readdir = readdir; }
 });
 
 test('buildOfflineSnapshot and renderOfflineHtml preserve multi-month, legacy, rates, fixed now, CSP, and safe JSON', async () => {

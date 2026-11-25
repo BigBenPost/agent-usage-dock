@@ -62,7 +62,7 @@ test('the page carries exactly one script, the policy that allows only that scri
   for (const forbidden of ['img', 'iframe', 'object', 'embed', 'form', 'input', 'textarea', 'link', 'base', 'audio', 'video', 'source', 'canvas', 'foreignobject']) {
     assert.equal(document.querySelectorAll(forbidden).length, 0, forbidden);
   }
-  assert.deepEqual([...document.querySelectorAll('[href]')].map((el) => el.getAttribute('href')), ['mailto:xijue.zhang@rakuten.com']);
+  assert.deepEqual([...document.querySelectorAll('[href]')].map((el) => el.getAttribute('href')), ['mailto:zhang.xijue@u.nus.edu']);
   assert.equal(document.querySelectorAll('[src], [srcset], [action], [formaction]').length, 0);
 });
 

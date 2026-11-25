@@ -364,6 +364,7 @@ test('exportOfflineHtml writes a self-contained HTML file and leaves nothing on 
 
     fake.saveTo = outFile;
     await app.command('agyTokenTracker.exportOfflineHtml')();
+    assert.doesNotMatch(fake.log, /offline HTML export failed/, fake.log);
     const html = await fs.readFile(outFile, 'utf8');
     assert.match(html, /Offline snapshot · exported/);
     assert.match(html, /claude:sess-1/);
@@ -378,4 +379,20 @@ test('disposing the extension stops the timer and unregisters the commands', asy
   assert.equal(app.intervals.timers[0].cleared, true);
   assert.equal(fake.commands.size, 0);
   assert.equal(fake.statusBarItem.disposed, true);
+});
+
+test('Configure Rates keeps inherited user fields out of workspace settings and describes actual inheritance', async () => {
+  const key = 'claude/claude-sonnet-5-5';
+  const app = await launch({ settings: { rates: { [key]: { input: 99, output: 100 } } } });
+  try {
+    await polled(app);
+    fake.workspaceValues.agyTokenTracker = { rates: { other: { input: 1 } } };
+    await fake.announce('agyTokenTracker');
+    fake.quickPickAnswers.push(choices => choices.find((choice: { label: string }) => choice.label === 'claude-sonnet-5-5'));
+    fake.inputAnswers.push('', '', '', '', '101');
+    await app.command('agyTokenTracker.configureRates')();
+    assert.equal(fake.inputs[0].value, '', 'inherited values are not presented as owned overrides');
+    assert.match(fake.inputs[0].prompt ?? '', /Blank follows 99/);
+    assert.deepEqual(fake.updates.at(-1), { section: 'agyTokenTracker', key: 'rates', value: { other: { input: 1 }, [key]: { output: 101 } }, target: 2 });
+  } finally { fake.workspaceValues.agyTokenTracker = {}; await app.close(); }
 });

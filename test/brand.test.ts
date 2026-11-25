@@ -3,7 +3,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import * as path from 'node:path';
 import { test } from 'node:test';
 import { inflateSync } from 'node:zlib';
-import { CONTACT_EMAIL, GEMINI_ICON, LEVEL_BAR_ICONS, LEVEL_RING_ICONS, STATUS_BAR_ICON } from '../src/brand';
+import { AUTHOR_NAME, CONTACT_EMAIL, GEMINI_ICON, LEVEL_BAR_ICONS, LEVEL_RING_ICONS, STATUS_BAR_ICON } from '../src/brand';
 
 const root = path.resolve(__dirname, '..', '..');
 const manifest = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
@@ -46,6 +46,9 @@ test('the heading mark is an inline SVG with its own gradient, and nothing in it
 });
 
 test('the contact address is one constant, and the manifest and the dashboard header agree with it', () => {
+  assert.equal(AUTHOR_NAME, 'zhang.xijue');
+  assert.equal(CONTACT_EMAIL, 'zhang.xijue@u.nus.edu');
+  assert.equal(manifest.author.name, AUTHOR_NAME);
   assert.equal(manifest.bugs.email, CONTACT_EMAIL);
   assert.equal(manifest.author.email, CONTACT_EMAIL);
   const holders = sourceFiles(path.join(root, 'src')).filter((file) => readFileSync(file, 'utf8').includes(CONTACT_EMAIL));

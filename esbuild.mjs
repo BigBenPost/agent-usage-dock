@@ -21,7 +21,7 @@ const outdir = outdirAt === -1 ? path.join(root, 'dist') : path.resolve(args[out
 /** @type {import('esbuild').BuildOptions} */
 const buildOptions = {
   absWorkingDir: root,
-  entryPoints: { extension: 'src/extension.ts', cli: 'src/cli.ts', dshWorker: 'src/collectors/dshWorker.ts' },
+  entryPoints: { extension: 'src/extension.ts', cli: 'src/cli.ts', dshWorker: 'src/collectors/dshWorker.ts', usageWorker: 'src/usageWorker.ts' },
   bundle: true,
   outdir,
   external: ['vscode'],

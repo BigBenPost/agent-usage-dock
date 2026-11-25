@@ -1,12 +1,25 @@
-![agent-usage-dock](media/readme/hero-banner.png)
+<div align="center">
 
 # agent-usage-dock
 
-Offline VS Code and Antigravity extension—with a CLI companion—for tracking local AI agent token usage, estimated costs, and shared monthly budgets.
+An offline usage dock for your AI agents.<br>
+A VS Code and Antigravity extension, with a CLI companion, for tracking local token usage, estimated costs, and shared monthly budgets.
+
+![Platform](https://img.shields.io/badge/Platform-VS%20Code%20%2F%20Antigravity-4E82EE?style=flat-square)
+![Node.js](https://img.shields.io/badge/Node.js-18%2B-668451?style=flat-square)
+![Language](https://img.shields.io/badge/Language-TypeScript-3178C6?style=flat-square)
+![Privacy](https://img.shields.io/badge/Privacy-Local%20%26%20Offline-9B958D?style=flat-square)
+![License](https://img.shields.io/badge/License-GPL--3.0-C2805A?style=flat-square)
+
+<br>
+
+![agent-usage-dock](media/readme/hero-banner.png)
+
+</div>
 
 - **Local & unified**: Reads logs from **Antigravity**, **DSH**, **Claude Code**, and **Codex**, and imports **Cursor** ledgers into one shared store (`~/.agy-token-tracker`).
 - **Status bar & dashboard**: Live today/month totals, optional token or cost budgets with warning/critical indicators, hover chart, daily bars, model breakdown, session inspector, and CSV export.
-- **Private by design**: Zero network requests, zero telemetry, no credentials or chat prompts stored. Accounting days and billing months use UTC; session views support `UTC` or `SGT`.
+- **Private by design**: Zero network requests, zero telemetry, no credentials or chat prompts in the accounting ledger. Explicit offline HTML exports include first-prompt summaries. Accounting days and billing months use UTC; session views support `UTC` or `SGT`.
 
 <details>
 <summary><strong>Dashboard screenshots</strong></summary>
@@ -47,6 +60,7 @@ Each source resolves its root from `agyTokenTracker.*` settings first, then its 
 
 - **Cursor**: Cursor stores no local usage logs. Import snapshots from `cursor-usage-monitor` via the CLI (`import ~/.cursor-usage-monitor/usage.json`). Model effort/thinking suffixes are normalized for display and pricing while preserving raw names in the ledger.
 - **Health states**: Sources report **Ready**, **Incomplete** (partial read or skipped lines; prior usage retained), **Not installed** (missing default root), or **Disabled** (switched off via `*Enabled`, retaining existing history). Explicit custom paths that do not exist report **Incomplete**.
+- **DSH links**: Symlinked folders and logs are followed only within the real `sessions/` root and collected once. Links outside that root, dangling links, loops and permission failures report **Incomplete** and make CLI `flush` exit `1`. Discovery always selects the highest log generation, including through aliases.
 
 ## Commands & Settings
 
@@ -74,7 +88,7 @@ Collection roots and `*Enabled` switches are machine-scoped (user settings only)
 | `tokenBudgetLimit` / `budgetLimit` | `0` | Monthly cap in millions of tokens / USD (`0` disables) |
 | `warningThreshold` / `criticalThreshold` | `0.75` / `0.9` | Budget fractions (`0`–`1`) for amber and red status indicators |
 | `pollIntervalSeconds` | `60` | Background scan interval (`15`–`86400` seconds) |
-| `rates` | `{}` | USD per 1M tokens keyed by `model`, `source/model`, or `source[provider]/model` (wildcards `*` supported) |
+| `rates` | `{}` | USD per 1M tokens keyed by `model`, `source/model`, or `source[provider]/model` (wildcards `*` supported; up to 1,000 entries and 256 characters per key) |
 | `correctionFactor` | `1` | Global multiplier applied to estimated costs |
 | `dashboardTheme` | `"light"` | `"light"`, `"dark"`, or `"auto"` |
 | `timeZone` | `"SGT"` | Session display timezone: `"UTC"` or `"SGT"` |
@@ -118,20 +132,25 @@ Damaged archives are never overwritten or moved automatically. To recover:
 
 ## Development
 
+Ledger loading, collection, reconciliation and JSON writes run in a persistent worker; only summaries and file cursors return to the extension host. JSONL cursor versions invalidate old parser results on upgrade.
+
 ```sh
 npm run check       # Type-check sources and tests (tsconfig.test.json)
-npm test            # Hermetic test suite (pass `-- --max-skipped 0` to disallow skips)
+npm test            # Hermetic tests; builds its offline fixture from source, no dist/ needed
 npm run build       # Bundle extension, CLI, and DSH worker into dist/
 npm run watch       # Incremental esbuild with source maps
 npm run smoke       # Run bundled CLI in a clean sandbox
+npm run benchmark   # After npm test: synthetic JSONL/ledger/export timings and I/O counts
 npm run check:vsix  # Verify VSIX contents, manifest, bundles, and README parity
 npm run clean       # Remove out/ and dist/
 ```
 
-- Optional dashboard keyboard/CSP browser smoke check (after `npm test`): `uv run --no-project --with playwright==1.60.0 python -B tools/browser_test_dashboard.py`
+- Dashboard keyboard/CSP browser smoke check (after `npm test`): `uv run --no-project --with playwright==1.60.0 python -B tools/browser_test_dashboard.py`
+- Pass `npm test -- --max-skipped 0` to require every test to run.
+- Where browser policy blocks `file://`, set `AGY_TEST_OFFLINE_HTTP=1` for the browser check to load the same offline HTML through loopback HTTP. This does not validate `file://` support.
 - Optional icon font regeneration: `uv run --no-project --with fonttools python -I tools/build-icon-font.py`
 - `package.json` packages `README.md` verbatim (`--no-rewrite-relative-links`), so keep links absolute or text-only.
 
 ## License
 
-PolyForm Noncommercial 1.0.0 — free for non-commercial use; commercial use is not permitted. See [LICENSE](LICENSE).
+GNU General Public License v3.0 (GPL-3.0) — see [LICENSE](LICENSE).

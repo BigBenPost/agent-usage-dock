@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.3.1 — 2026-11-25
+
+- Follow DSH links within the sessions root once; report broken, looping or escaping links as Incomplete and fail strict flushes while preserving history and unreadable cursors.
+- Keep the selected historical month through offline sorting, filtering, pagination and time-zone changes; retain navigation for token-only legacy months and sources.
+- Track Antigravity title/project revisions independently of request counters, including metadata-only renames, explicit clears and archive recovery.
+- Build offline test fixtures directly from source so clean checkouts and stale dist folders run the same tests.
+- Reuse a per-export log directory index for missing sessions, and add synthetic JSONL/ledger/export performance benchmarks.
+- Replace rate wildcard regexes with bounded matching and cap rule size/count to prevent extension-host stalls.
+- Match duplicate Cursor requests one-to-one across reordered, growing and pruned ledger snapshots.
+- Preserve Antigravity conversation identities across relocated logs and symlink aliases.
+- Edit only the selected configuration scope and show the correct inherited rates.
+- Reject overflowing accounting aggregates atomically before writing the ledger or archive.
+- Move ledger loading, scans, reconciliation and serialization into a persistent worker; keep raw requests out of the extension host.
+- Version JSONL cursors so parser upgrades re-read unchanged logs; clarify the privacy scope of offline HTML exports.
+
+
 ## 1.3.0
 
 - Fence working store and archive writes with the same lock. Validate archive generations and protect local accounting and backup files with private permissions.

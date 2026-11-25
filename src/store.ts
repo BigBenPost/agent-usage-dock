@@ -4,7 +4,7 @@ import { archiveDir, backupDir, currentArchiveFile, dailyBackup, loadArchive, sa
 import { acquireFileLock } from './fileLock';
 import { Fence, fileStamp, publishPrivateFile, sweepOncePerProcess, tightenOwnedPath } from './privateFiles';
 import { aggregate, canonicalRecords, isUsageRecord, joinBaseline, LegacyBaseline, mergeLegacy, preferredRecord, sameAccounting, splitBaseline, usageRecordProblem } from './reconcile';
-import { cursorRecords, cursorSlot, isCursorLedger } from './cursorLedger';
+import { cursorRecords, CursorMatcher, isCursorLedger } from './cursorLedger';
 import { isByModel, isDay, isDays, isLegacy, isSessionTotal, isSessionTotals } from './validation';
 import { FileState, safeModel } from './collectors/lines';
 import { DayRecord, SessionRecord, Source, UsageRecord } from './types';
@@ -112,8 +112,10 @@ export function parseStoreData(text: string, file: string): StoreData {
 export function mergeData(base: StoreData, other: StoreData): StoreData {
   const out = emptyData();
   out.records = { ...base.records };
-  for (const rec of Object.values(other.records ?? {})) {
-    const id = rec.source === 'cursor' ? cursorSlot(out.records, rec) : rec.id;
+  const cursor = new CursorMatcher(out.records);
+  // Attribute known sessions before anonymous copies can consume their matching slots.
+  for (const rec of Object.values(other.records ?? {}).sort((a, b) => Number(!a.session) - Number(!b.session))) {
+    const id = rec.source === 'cursor' ? cursor.slot(rec) : rec.id;
     const placed = id === rec.id ? rec : { ...rec, id };
     out.records[id] = out.records[id] ? preferredRecord(out.records[id], placed) : placed;
   }
@@ -248,7 +250,14 @@ export class UsageStore {
     rec = UsageStore.normalized(rec);
     const problem = usageRecordProblem(rec, rec?.id);
     if (problem) throw new Error(`Invalid usage record: ${problem}`);
-    return this.upsert(rec);
+    const records = this.data.records, dirty = this.dirty;
+    this.data.records = { ...records };
+    try {
+      const changed = this.upsert(rec);
+      if (!changed) { Object.assign(records, this.data.records); this.data.records = records; }
+      return changed;
+    }
+    catch (error) { this.data.records = records; this.dirty = dirty; throw error; }
   }
 
   /** Returns how many records changed what is counted. A newer revision of identical facts is kept in memory and saved with the next save, but is not a change. */
@@ -256,6 +265,8 @@ export class UsageStore {
     const rejected: { id: string; reason: string }[] = [];
     this.rejectedRecords = rejected;
     let changed = 0;
+    const priorRecords = this.data.records, priorDirty = this.dirty;
+    this.data.records = { ...priorRecords };
     this.batching = true;
     try {
       for (const raw of records) {
@@ -264,8 +275,13 @@ export class UsageStore {
         if (problem) rejected.push({ id: typeof rec?.id === 'string' ? rec.id : '', reason: problem });
         else if (this.upsert(rec)) changed++;
       }
-    }
-    finally { this.batching = false; if (changed) this.reaggregate(); }
+      if (changed) this.reaggregate();
+      else { Object.assign(priorRecords, this.data.records); this.data.records = priorRecords; }
+    } catch (error) {
+      this.data.records = priorRecords;
+      this.dirty = priorDirty;
+      throw error;
+    } finally { this.batching = false; }
     return changed;
   }
 
@@ -288,10 +304,12 @@ export class UsageStore {
 
   private reaggregate(): void {
     const codexProblems: string[] = [];
-    this.data.records = canonicalRecords(this.data.records, codexProblems);
+    const records = canonicalRecords(this.data.records, codexProblems);
+    const totals = aggregate(records, this.data.legacy, this.data.hiddenSessions, true);
+    this.data.records = records;
     if (codexProblems.length) this.data.codexProblems = codexProblems;
     else delete this.data.codexProblems;
-    Object.assign(this.data, aggregate(this.data.records, this.data.legacy, this.data.hiddenSessions, true));
+    Object.assign(this.data, totals);
   }
 
   markDirty(): void {
@@ -379,6 +397,7 @@ export class UsageStore {
   /** `beforeCommit` runs once the temp file is on disk and may veto the rename by throwing. */
   async save(beforeCommit?: Fence): Promise<void> {
     if (!this.dirty) return;
+    if (!isDays(this.data.days) || !isSessionTotals(this.data.sessions ?? {})) throw new Error('Invalid accounting totals; refusing to save');
     await publishPrivateFile(this.file, JSON.stringify({ ...this.data, ...splitBaseline(this.data.legacy) }), beforeCommit ?? this.assertHeld);
     this.dirty = false;
     this.savedAttempt = this.data.health?.attemptedAt;

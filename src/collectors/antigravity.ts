@@ -27,7 +27,7 @@ export function fullPassInterval(file: string): number {
   return FULL_PASS_MS * (1 + FULL_PASS_JITTER * fraction);
 }
 
-const metadataCache = new Map<string, { key: string; map: Map<string, AntigravityMeta> }>();
+const metadataCache = new Map<string, { key: string; time: number; map: Map<string, AntigravityMeta> }>();
 const nonEmpty = (value: unknown): string | undefined => {
   const text = String(value ?? '');
   return text.trim() ? text : undefined;
@@ -66,7 +66,8 @@ export async function loadConversationMetadata(dbPath = ANTIGRAVITY_DB_PATH, ses
       }
       map.set(id, { title: nonEmpty(row.title), project, lastModifiedMs: Date.parse(lastMod) || 0 });
     }
-    metadataCache.set(dbPath, { key: revision.key, map });
+    if ((await databaseRevision(dbPath)).key !== revision.key) throw new Error('Conversation metadata changed during collection');
+    metadataCache.set(dbPath, { key: revision.key, time: revision.time, map });
     return map;
   } catch {
     throw new Error('Cannot read conversation metadata: ' + dbPath);
@@ -99,6 +100,8 @@ export function modelFromEnum(id: number): string {
       return 'gemini-3.8-flash';
     case 1525:
       return 'gemini-4-hydrogen';
+    case 1526:
+      return 'gemini-4-hydrogen-medium';
     default:
       return 'unknown-model';
   }
@@ -300,6 +303,17 @@ export async function listAntigravityConversationDbs(conversationsRoot = ANTIGRA
   return out;
 }
 
+/** A moved log keeps its stored session; a symlink's spelling is never its initial identity. */
+async function conversationIdentity(file: string, known: Record<string, FileState>, database: boolean): Promise<string> {
+  const stat = await fs.stat(file);
+  const identity = `${stat.dev}:${stat.ino}`;
+  const prior = Object.entries(known).find(([name, state]) => name === file || state.identity === identity);
+  if (prior?.[1].session) return prior[1].session;
+  const real = await fs.realpath(file);
+  const original = prior?.[0] ?? real;
+  return database ? path.basename(original, '.db') : path.basename(path.dirname(path.dirname(path.dirname(original))));
+}
+
 export interface ConversationDbRead {
   records: UsageRecord[];
   /** Steps that could not be decoded; `offset` is the step index. */
@@ -316,11 +330,11 @@ export async function readConversationDbRecords(
   dbPath: string,
   metaMap: Map<string, AntigravityMeta>,
   after = -1,
-  options: { session?: SqliteSession; strict?: boolean } = {},
+  options: { session?: SqliteSession; strict?: boolean; conversationId?: string } = {},
 ): Promise<ConversationDbRead> {
   const records: UsageRecord[] = [];
   const skipped: ConversationDbRead['skipped'] = [];
-  const cid = path.basename(dbPath).replace(/\.db$/, '');
+  const cid = options.conversationId ?? path.basename(await fs.realpath(dbPath), '.db');
   const meta = metaMap.get(cid);
   const own = options.session ? undefined : new SqliteSession();
   const session = options.session ?? own!;
@@ -367,16 +381,19 @@ export async function scanAntigravity(
   emit: (rec: UsageRecord) => void,
   problems: string[] = [],
   conversationsRoot?: string,
-  options: LineScanOptions = {},
+  options: LineScanOptions & { identityFiles?: Record<string, FileState>; onMetadata?: (map: Map<string, AntigravityMeta>, updatedAt: number) => void } = {},
 ): Promise<number> {
   const resolvedConvRoot = conversationsRoot ?? path.join(path.dirname(brainRoot), 'conversations');
   const label = SOURCE_LABELS.antigravity;
   const listing = problems.length;
   const transcripts = await listAntigravityTranscripts(brainRoot, problems);
   const conversationDbs = await listAntigravityConversationDbs(resolvedConvRoot, problems);
+  const identities = { ...options.identityFiles, ...files };
   const session = new SqliteSession('auto', options.signal);
   try {
     const metaMap = await loadConversationMetadata(dbPath, session).catch(err => { problems.push(String(err)); return new Map<string, AntigravityMeta>(); });
+    const metadata = metadataCache.get(dbPath);
+    if (metadata?.map === metaMap) options.onMetadata?.(metaMap, metadata.time);
     let changed = 0;
     const live = new Set([...transcripts, ...conversationDbs]);
     // A folder that failed to list looks empty; its files are not gone, so their states stay.
@@ -387,12 +404,9 @@ export async function scanAntigravity(
     // 1. Scan live/active transcript.jsonl files
     for (const file of transcripts) {
       options.signal?.throwIfAborted();
-      const parts = file.split(path.sep);
-      const cidIdx = parts.lastIndexOf('.system_generated') - 1;
-      const cid = cidIdx >= 0 ? parts[cidIdx] : path.basename(path.dirname(path.dirname(path.dirname(file))));
-      const meta = metaMap.get(cid);
-
       try {
+        const cid = await conversationIdentity(file, identities, false);
+        const meta = metaMap.get(cid);
         const state = await readNewLines(file, files[file], (line, s) => {
           if (line.includes('<USER_SETTINGS_CHANGE>') && line.includes('Model Selection')) {
             const match = /Model Selection\` from (?:None|.*?) to (.*?)\.\s+No need/i.exec(line)
@@ -406,6 +420,7 @@ export async function scanAntigravity(
           if (!isUsageRecord(rec, rec.id)) throw new Error('Invalid usage record');
           emit(rec);
         }, options);
+        state.session = cid;
         if (state !== files[file]) {
           files[file] = state;
           changed++;
@@ -423,6 +438,7 @@ export async function scanAntigravity(
       options.signal?.throwIfAborted();
       try {
         const st = await fs.stat(dbFile);
+        const cid = await conversationIdentity(dbFile, identities, true);
         const revision = await databaseRevision(dbFile);
         const state = files[dbFile];
         const interval = fullPassInterval(dbFile);
@@ -434,13 +450,13 @@ export async function scanAntigravity(
 
         const full = options.strict || !state?.fingerprint?.endsWith(`:${PARSER_VERSION}`) || !state.lastFullScan || Date.now() - state.lastFullScan > interval;
         const windowStart = full ? -1 : Math.max(-1, (state.dbCursor ?? 0) - 256);
-        const { records, skipped, last } = await readConversationDbRecords(dbFile, metaMap, windowStart, { session, strict: options.strict });
+        const { records, skipped, last } = await readConversationDbRecords(dbFile, metaMap, windowStart, { session, strict: options.strict, conversationId: cid });
         if (options.strict && (await databaseRevision(dbFile)).key !== revision.key) throw new Error('Conversation database changed during flush');
         for (const rec of records) emit(rec);
         const earlier = full ? [] : skippedSamples(state.skipped);
         const kept = earlier.filter(sample => sample.offset <= windowStart);
         const count = (full ? 0 : Math.max(0, (Number.isSafeInteger(state.skipped?.count) ? state.skipped!.count : 0) - (earlier.length - kept.length))) + skipped.length;
-        const next: FileState = { size: st.size, mtimeMs: revision.time, offset: st.size, fingerprint: revision.key, strictRead: options.strict, dbCursor: Math.max(state?.dbCursor ?? -1, last), lastFullScan: full ? Date.now() : state.lastFullScan };
+        const next: FileState = { session: cid, identity: `${st.dev}:${st.ino}`, size: st.size, mtimeMs: revision.time, offset: st.size, fingerprint: revision.key, strictRead: options.strict, dbCursor: Math.max(state?.dbCursor ?? -1, last), lastFullScan: full ? Date.now() : state.lastFullScan };
         if (count) next.skipped = { count, samples: [...kept, ...skipped].slice(0, MAX_SKIPPED_SAMPLES) };
         files[dbFile] = next;
         changed++;

@@ -5,6 +5,10 @@ Run `npm test` first: the fixtures are rendered from the compiled code in out/.
 
   uv run --no-project --with playwright==1.60.0 python -B tools/browser_test_dashboard.py
 
+The offline snapshot uses file:// by default. Where browser policy blocks local files,
+AGY_TEST_OFFLINE_HTTP=1 tests the same generated HTML through a loopback route instead;
+that mode does not validate file:// support.
+
 The browser is the executable named by PLAYWRIGHT_CHROMIUM_EXECUTABLE if that is set. Otherwise the script looks for Chromium,
 Chrome or Edge on PATH and in the usual install folders of macOS and Windows, then falls back to a Chromium that Playwright
 installed itself. Example for Chrome on macOS:
@@ -253,12 +257,17 @@ const legacy = { days: { '2026-09-05': { claude: { 'claude-sonnet-5-5': bucket(1
 """
             subprocess.check_call(["node", "-e", node_script, tmp], cwd=ROOT)
             file_url = html_path.resolve().as_uri()
+            offline_http = os.environ.get("AGY_TEST_OFFLINE_HTTP") == "1"
+            if offline_http:
+                file_url = "http://127.0.0.1/offline-export.html"
             with sync_playwright() as runtime:
                 browser = launch(runtime)
                 try:
                     for width in (320, 1100):
                         with self.subTest(width=width):
                             page = browser.new_page(viewport={"width": width, "height": 800})
+                            if offline_http:
+                                page.route(file_url, lambda route: route.fulfill(content_type="text/html", body=html_path.read_text()))
                             errors = []
                             network_requests = []
                             page.on("pageerror", lambda err: errors.append(str(err)))
@@ -293,6 +302,14 @@ const legacy = { days: { '2026-09-05': { claude: { 'claude-sonnet-5-5': bucket(1
                                 page.locator("[data-menu-toggle='month']").click()
                                 page.locator("[data-menu='month'] [data-month='2026-10']").click()
                                 self.assertIn("October 2026", page.locator("header.top").text_content())
+                                page.locator("[data-zone=SGT]").click()
+                                self.assertIn("October 2026", page.locator("header.top").text_content())
+                                page.locator("[data-focus=session-sort]").click()
+                                page.locator("[data-sort-option='last:desc']").click()
+                                self.assertIn("October 2026", page.locator("header.top").text_content())
+                                page.locator("[data-focus='session-claude:cross']").click()
+                                self.assertIn("October 2026", page.locator("#pop-card").text_content())
+                                page.keyboard.press("Escape")
                                 overflow = page.evaluate("document.documentElement.scrollWidth - document.documentElement.clientWidth")
                                 self.assertLessEqual(overflow, 1)
                                 self.assertEqual(errors, [])

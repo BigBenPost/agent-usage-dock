@@ -1,4 +1,4 @@
-import { scanAntigravity } from './collectors/antigravity';
+import { AntigravityMeta, scanAntigravity } from './collectors/antigravity';
 import { parseClaudeLine } from './collectors/claudeCode';
 import { parseCodexLine } from './collectors/codex';
 import { scanDsh } from './collectors/dsh';
@@ -10,12 +10,21 @@ import { UsageStore } from './store';
 import { promises as fs } from 'fs';
 import { SCANNED_SOURCES, ScannedSource, SOURCE_LABELS, Source, UsageRecord } from './types';
 
-async function collectAntigravity(files: Record<string, FileState>, brain: string, db: string, conversations?: string, options?: LineScanOptions) {
+interface Collection {
+  records: UsageRecord[];
+  problems: string[];
+  changedFiles: number;
+  metadata?: { sessions: Map<string, AntigravityMeta>; updatedAt: number };
+}
+
+async function collectAntigravity(files: Record<string, FileState>, brain: string, db: string, conversations?: string, options?: LineScanOptions & { identityFiles?: Record<string, FileState> }): Promise<Collection> {
   const records: UsageRecord[] = [], problems: string[] = [];
+  let metadata: Collection['metadata'];
   let changedFiles = 0;
-  try { changedFiles = await scanAntigravity(brain, db, files, rec => records.push(rec), problems, conversations, options); }
+  try { changedFiles = await scanAntigravity(brain, db, files, rec => records.push(rec), problems, conversations,
+    { ...options, onMetadata: (sessions, updatedAt) => { metadata = { sessions, updatedAt }; } }); }
   catch (err) { if (options?.signal?.aborted) throw err; problems.push(err instanceof Error ? err.message : String(err)); }
-  return { records, problems, changedFiles };
+  return { records, problems, changedFiles, metadata };
 }
 
 async function collectJsonl(source: Source, roots: string[], files: Record<string, FileState>, parse: (line: string, state: FileState) => UsageRecord | undefined, options: LineScanOptions) {
@@ -43,7 +52,6 @@ interface RefreshOptions extends LineScanOptions {
   codexEnabled?: boolean;
 }
 
-type Collection = Awaited<ReturnType<typeof collectAntigravity>>;
 interface SourceCollection extends Collection {
   source: Source;
   root: string;
@@ -104,7 +112,7 @@ export async function refreshUsage(store: UsageStore, file: string, configured?:
   const claude = claudeHome(options.claudeHome);
   const codex = codexHome(options.codexHome);
   const local: Record<ScannedSource, LocalSource> = {
-    antigravity: { root: paths.home, required: selected === 'antigravity' || !!(configured || process.env.ANTIGRAVITY_HOME), enabled: options.antigravityEnabled, read: () => collectAntigravity(files, paths.brain, paths.db, paths.conversations, options) },
+    antigravity: { root: paths.home, required: selected === 'antigravity' || !!(configured || process.env.ANTIGRAVITY_HOME), enabled: options.antigravityEnabled, read: () => collectAntigravity(files, paths.brain, paths.db, paths.conversations, { ...options, identityFiles: before }) },
     dsh: { root: dsh, required: selected === 'dsh' || !!(options.dshHome || process.env.DSH_HOME), enabled: options.dshEnabled, read: () => scanDsh(dsh, files, options.signal) },
     claude: { root: claude, required: selected === 'claude' || !!(options.claudeHome || process.env.CLAUDE_CONFIG_DIR), enabled: options.claudeEnabled, read: () => collectJsonl('claude', [claudeProjects(claude)], files, parseClaudeLine, options) },
     codex: { root: codex, required: selected === 'codex' || !!(options.codexHome || process.env.CODEX_HOME), enabled: options.codexEnabled, read: () => collectJsonl('codex', codexLogRoots(codex), files, parseCodexLine, options) },
@@ -121,6 +129,25 @@ export async function refreshUsage(store: UsageStore, file: string, configured?:
   return store.transaction(async checkpoint => {
     const backup = rebuild ? await rebuildBackup(file) : undefined;
     if (rebuild) store.rebuild();
+    // Apply metadata to freshly merged history, including unchanged or deleted logs and
+    // records another writer added while this scan ran. Counter provenance stays intact.
+    const metadata = results.find(r => r.source === 'antigravity')?.metadata;
+    if (metadata) {
+      // One carrier per session is enough: aggregate() applies its metadata to the
+      // whole session. Do not rewrite every historical request on each title change.
+      const carriers = new Map<string, UsageRecord>();
+      for (const rec of [...Object.values(store.data.records), ...result.records]) {
+        if (rec.source !== 'antigravity' || !rec.session || !metadata.sessions.has(rec.session)) continue;
+        const prior = carriers.get(rec.session);
+        if (!prior || (rec.evidence?.antigravityMetadataAt ?? -1) > (prior.evidence?.antigravityMetadataAt ?? -1)) carriers.set(rec.session, rec);
+      }
+      for (const [session, rec] of carriers) {
+        if ((rec.evidence?.antigravityMetadataAt ?? -1) >= metadata.updatedAt) continue;
+        const meta = metadata.sessions.get(session)!;
+        result.records.push({ ...rec, title: meta.title, project: meta.project,
+          evidence: { kind: 'transcript', revision: 0, parserVersion: 3, ...rec.evidence, antigravityMetadataAt: metadata.updatedAt } });
+      }
+    }
     const changed = store.addRecords(result.records);
     reportRejected(store, results);
     const codexResult = results.find(r => r.source === 'codex' && (r.status === 'ok' || r.status === 'incomplete'));

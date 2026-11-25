@@ -91,3 +91,15 @@ test('the rates Configure Rates edits are those of the scope it saves to: the fo
   reset();
   assert.deepEqual(ownRates(config()), {});
 });
+
+test('rate editing removes only the target scope when computing inheritance', () => {
+  const { inheritedRates, ownRates } = require('../src/config') as typeof import('../src/config');
+  reset();
+  rates('agyTokenTracker', { globalValue: { model: { input: 99, output: 100 } }, workspaceValue: { other: { input: 1 } } });
+  const c = { inspect: () => ({ ...settings.agyTokenTracker.rates }) } as never;
+  assert.equal(ownRates(c).model, undefined, 'an inherited model is blank in the editor');
+  assert.deepEqual(inheritedRates(c, 'model').model, { input: 99, output: 100 });
+  rates('agyTokenTracker', { globalValue: { model: { input: 99, output: 100 } }, workspaceValue: { model: { output: 101 } } });
+  assert.deepEqual(ownRates(c).model, { output: 101 });
+  assert.deepEqual(inheritedRates(c, 'model').model, { input: 99, output: 100 });
+});

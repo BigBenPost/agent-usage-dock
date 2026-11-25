@@ -9,6 +9,7 @@ export interface SkippedLines {
 }
 
 export interface FileState {
+  parserVersion?: number;
   size: number;
   mtimeMs: number;
   offset: number;
@@ -208,7 +209,7 @@ export function skippedProblem(label: string, file: string, skipped: SkippedLine
  */
 export async function readNewLines(file: string, prev: FileState | undefined, onLine: LineHandler, options: LineScanOptions = {}): Promise<FileState> {
   options.signal?.throwIfAborted();
-  const verified = prev?.prefixDigest && (!options.strict || prev.strictRead);
+  const verified = prev?.parserVersion === 2 && prev?.prefixDigest && (!options.strict || prev.strictRead);
   if (verified && prev) {
     const stat = await fs.stat(file);
     if (prev.size === stat.size && prev.mtimeMs === stat.mtimeMs && prev.ctimeMs === stat.ctimeMs && prev.identity === `${stat.dev}:${stat.ino}`) return prev;
@@ -325,6 +326,7 @@ export async function readNewLines(file: string, prev: FileState | undefined, on
     if (options.strict && (after.size !== stat.size || after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs)) {
       throw new Error('JSONL changed during flush; retry after the writer stops');
     }
+    state.parserVersion = 2;
     state.strictRead = options.strict === true;
     state.prefixDigest = digest.digest('hex');
     return state;

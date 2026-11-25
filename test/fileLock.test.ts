@@ -3,7 +3,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import { acquireFileLock } from '../src/fileLock';
 import { sweepOncePerProcess, sweepStale } from '../src/privateFiles';
 import { UsageStore } from '../src/store';
@@ -29,6 +29,97 @@ const acquired = async (file: string, waitMs = 3000): Promise<boolean> => {
   return !!lock;
 };
 const waits = (file: string) => assert.rejects(acquireFileLock(file, { waitMs: 500 }), /timed out waiting for/);
+
+function platform(t: TestContext, value: NodeJS.Platform): void {
+  const original = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  Object.defineProperty(process, 'platform', { ...original, value });
+  t.after(() => Object.defineProperty(process, 'platform', original));
+}
+
+test('a transient Windows EPERM while creating a lock is retried before ownership is granted', async (t) => {
+  platform(t, 'win32');
+  const file = await newFile();
+  const mkdir = fs.mkdir;
+  const failure = Object.assign(new Error('delete-pending lock directory'), { code: 'EPERM' });
+  let injected = false;
+  t.mock.method(fs, 'mkdir', ((...args: Parameters<typeof fs.mkdir>) => {
+    if (args[0] === `${file}.lock` && !injected) {
+      injected = true;
+      return Promise.reject(failure);
+    }
+    return mkdir(...args);
+  }) as typeof fs.mkdir);
+  const lock = await acquireFileLock(file, { waitMs: 2000 });
+  try {
+    assert.equal(injected, true);
+    await lock.assertHeld();
+  } finally { await lock.release(); }
+  assert.deepEqual(await fs.readdir(path.dirname(file)), []);
+});
+
+test('Windows EPERM during creation or inspection never bypasses a live lock owner', async (t) => {
+  platform(t, 'win32');
+  const file = await newFile();
+  const lock = await acquireFileLock(file);
+  const mkdir = fs.mkdir, stat = fs.stat;
+  const failure = Object.assign(new Error('delete-pending lock directory'), { code: 'EPERM' });
+  let mkdirFailed = false, statFailed = false;
+  t.mock.method(fs, 'mkdir', ((...args: Parameters<typeof fs.mkdir>) => {
+    if (args[0] === `${file}.lock` && !mkdirFailed) {
+      mkdirFailed = true;
+      return Promise.reject(failure);
+    }
+    return mkdir(...args);
+  }) as typeof fs.mkdir);
+  t.mock.method(fs, 'stat', ((...args: Parameters<typeof fs.stat>) => {
+    if (args[0] === `${file}.lock` && !statFailed) {
+      statFailed = true;
+      return Promise.reject(failure);
+    }
+    return stat(...args);
+  }) as typeof fs.stat);
+  try {
+    await assert.rejects(acquireFileLock(file, { waitMs: 350 }), error =>
+      error === failure || /timed out waiting for/.test((error as Error).message));
+    assert.equal(mkdirFailed && statFailed, true);
+    await lock.assertHeld();
+  } finally { await lock.release(); }
+});
+
+test('a persistent Windows lock permission failure stops at the deadline with the original error', { timeout: 10000 }, async (t) => {
+  platform(t, 'win32');
+  const file = await newFile();
+  const mkdir = fs.mkdir;
+  const failure = Object.assign(new Error('permission denied'), { code: 'EPERM' });
+  let attempts = 0;
+  t.mock.method(fs, 'mkdir', ((...args: Parameters<typeof fs.mkdir>) => {
+    if (args[0] === `${file}.lock`) {
+      attempts++;
+      return Promise.reject(failure);
+    }
+    return mkdir(...args);
+  }) as typeof fs.mkdir);
+  await assert.rejects(acquireFileLock(file, { waitMs: 100 }), error => error === failure);
+  assert.ok(attempts >= 2);
+  assert.deepEqual(await fs.readdir(path.dirname(file)), []);
+});
+
+test('lock permission errors on other platforms are reported immediately', async (t) => {
+  platform(t, 'linux');
+  const file = await newFile();
+  const mkdir = fs.mkdir;
+  const failure = Object.assign(new Error('permission denied'), { code: 'EPERM' });
+  let attempts = 0;
+  t.mock.method(fs, 'mkdir', ((...args: Parameters<typeof fs.mkdir>) => {
+    if (args[0] === `${file}.lock`) {
+      attempts++;
+      return Promise.reject(failure);
+    }
+    return mkdir(...args);
+  }) as typeof fs.mkdir);
+  await assert.rejects(acquireFileLock(file, { waitMs: 100 }), error => error === failure);
+  assert.equal(attempts, 1);
+});
 
 test('a lock names its owner as <pid>-<uuid> for older releases, and keeps the host and time apart in info', async () => {
   const file = await newFile();

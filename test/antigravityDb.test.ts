@@ -8,6 +8,8 @@ import { FileState } from '../src/collectors/lines';
 import { SqliteSession } from '../src/collectors/sqlite';
 import { UsageRecord } from '../src/types';
 import { temporaryDirectory } from './temp';
+import { UsageStore } from '../src/store';
+import { refreshUsage } from '../src/scan';
 
 let DatabaseSync: (new (file: string) => { exec(sql: string): void; close(): void }) | undefined;
 try { ({ DatabaseSync } = require('node:sqlite')); } catch { /* the sqlite3 command is the writer then */ }
@@ -43,6 +45,53 @@ const hex = (buffer: Buffer) => `X'${buffer.toString('hex')}'`;
 const TABLE = 'CREATE TABLE steps(idx INTEGER PRIMARY KEY, step_type INTEGER, metadata BLOB)';
 const insert = (idx: number, metadata: Buffer, type = 15) => `INSERT INTO steps VALUES (${idx}, ${type}, ${hex(metadata)})`;
 const steps = (from: number, to: number, bad: Record<number, Buffer> = {}) => Array.from({ length: to - from + 1 }, (_, i) => insert(from + i, bad[from + i] ?? GOOD));
+
+test('metadata-only renames, clears and late metadata survive unchanged logs, rebuild, import and archive recovery', async t => {
+  if (!needWriter(t)) return;
+  const root = await temporaryDirectory('agy-rename-');
+  const file = path.join(root, 'store', 'usage-v3.json');
+  const transcript = path.join(root, 'brain', 'c1', '.system_generated', 'logs', 'transcript.jsonl');
+  await fs.mkdir(path.dirname(transcript), { recursive: true });
+  await fs.writeFile(transcript, JSON.stringify({ created_at: '2026-11-16T10:00:00Z', step_index: 1, input_tokens: 100, output_tokens: 20, model: 'gemini-3.8-flash' }) + '\n');
+  const meta = path.join(root, 'conversation_summaries.db');
+  let store = await UsageStore.load(file);
+  await refreshUsage(store, file, root);
+  const totals = JSON.stringify(store.data.days);
+  // Metadata can arrive after the transcript was already read and need not touch its mtime.
+  writeDb(meta, 'CREATE TABLE conversation_summaries(conversation_id TEXT, title TEXT, workspace_uris TEXT, last_modified_time TEXT)',
+    `INSERT INTO conversation_summaries VALUES ('c1', 'Zulu title', '["file:///work/zulu"]', '2026-11-16T10:00:00Z')`);
+  await refreshUsage(store, file, root);
+  assert.equal(store.data.sessions!['antigravity:c1'].title, 'Zulu title');
+  const stale = path.join(root, 'old.json');
+  await fs.copyFile(file, stale);
+  for (const [title, project] of [['Alpha title', 'alpha'], ['Zulu title', 'zulu'], ['', '']] as const) {
+    // Force distinct DB revisions even on filesystems with coarse timestamp resolution.
+    await new Promise(resolve => setTimeout(resolve, 5));
+    writeDb(meta, `UPDATE conversation_summaries SET title='${title}', workspace_uris='${project ? `["file:///work/${project}"]` : '[]'}'`);
+    store = await UsageStore.load(file);
+    await refreshUsage(store, file, root);
+    const session = store.data.sessions!['antigravity:c1'];
+    assert.equal(session.title, title || undefined);
+    assert.equal(session.project, project || undefined);
+    assert.equal(JSON.stringify(store.data.days), totals);
+    await refreshUsage(store, file, root, true);
+    await store.absorb(stale);
+    assert.equal(store.data.sessions!['antigravity:c1'].title, title || undefined);
+    assert.equal(store.data.sessions!['antigravity:c1'].project, project || undefined);
+    await fs.rm(file);
+    store = await UsageStore.recover(file, () => assert.fail('archive is healthy'));
+    assert.equal(store.data.sessions!['antigravity:c1'].title, title || undefined);
+    assert.equal(JSON.stringify(store.data.days), totals);
+  }
+  await fs.rm(transcript);
+  await new Promise(resolve => setTimeout(resolve, 5));
+  writeDb(meta, "UPDATE conversation_summaries SET title='Archive-only title'");
+  await refreshUsage(store, file, root);
+  assert.equal(store.data.sessions!['antigravity:c1'].title, 'Archive-only title');
+  await fs.rm(meta);
+  await refreshUsage(store, file, root);
+  assert.equal(store.data.sessions!['antigravity:c1'].title, 'Archive-only title', 'missing metadata does not clear known titles');
+});
 
 async function layout() {
   const root = await temporaryDirectory('agy-db-');

@@ -1,3 +1,4 @@
+import { matchesGlob } from './glob';
 import { canonicalModel } from './modelNames';
 import { Source, TOKEN_KEYS, Tokens } from './types';
 import { DSH_ESTIMATE, DeepSeekSku, deepSeekModelSku, deepSeekSku, tierOf, Tier } from './projection';
@@ -157,8 +158,6 @@ export function rateScope(source: Source, provider?: string): string {
 }
 
 const scopedKey = /^(?:antigravity|dsh|claude|codex|cursor)(?:\[[^\]]+\])?\//;
-const wildcard = (pattern: string) => new RegExp('^' + pattern.split('*')
-  .map(part => part.replace(/[.*+?^$(){}|[\]\\]/g, '\\$&')).join('.*') + '$');
 
 function cleanOverride(value: unknown): Partial<Rate> | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
@@ -172,16 +171,17 @@ function cleanOverride(value: unknown): Partial<Rate> | undefined {
 }
 
 export class Pricing {
-  private readonly entries: { scope: string; model: string; pattern?: RegExp; rate: Partial<Rate> }[] = [];
+  private readonly entries: { scope: string; model: string; pattern?: string; rate: Partial<Rate> }[] = [];
   private readonly resolved = new Map<string, ResolvedRate | undefined>();
 
   constructor(overrides: RateOverrides = {}, readonly correctionFactor = 1) {
-    for (const [key, value] of Object.entries(overrides)) {
+    for (const [key, value] of Object.entries(overrides).slice(0, 1000)) {
+      if (key.length > 256) continue;
       const rate = cleanOverride(value);
       if (!rate) continue;
       const scope = scopedKey.exec(key)?.[0] ?? '';
       const model = key.slice(scope.length);
-      this.entries.push({ scope, model, pattern: model.includes('*') ? wildcard(model) : undefined, rate });
+      this.entries.push({ scope, model, pattern: model.includes('*') ? model : undefined, rate });
     }
   }
 
@@ -190,7 +190,7 @@ export class Pricing {
     const scoped = (scope: string) => {
       const mine = this.entries.filter(entry => entry.scope === scope);
       for (const name of names) { const exact = mine.find(entry => !entry.pattern && entry.model === name); if (exact) return exact.rate; }
-      for (const name of names) { const match = mine.find(entry => entry.pattern?.test(name)); if (match) return match.rate; }
+      for (const name of names) { const match = mine.find(entry => entry.pattern !== undefined && matchesGlob(entry.pattern, name)); if (match) return match.rate; }
     };
     return { ...scoped(''), ...scoped(rateScope(source)), ...(provider && scoped(rateScope(source, provider))) };
   }

@@ -83,6 +83,21 @@ export function ownRates(config: vscode.WorkspaceConfiguration): RateOverrides {
   return isObject(rates) ? rates as RateOverrides : {};
 }
 
+/** Effective rates after removing one model only from the scope the editor will write. */
+export function inheritedRates(config: vscode.WorkspaceConfiguration, model: string): RateOverrides {
+  const inspected = { ...config.inspect('rates') };
+  const target = settingTarget(config, 'rates');
+  const key = target === vscode.ConfigurationTarget.WorkspaceFolder ? 'workspaceFolderValue'
+    : target === vscode.ConfigurationTarget.Workspace ? 'workspaceValue' : 'globalValue';
+  const own = inspected[key];
+  if (isObject(own)) {
+    const rest = { ...own };
+    delete rest[model];
+    inspected[key] = rest;
+  }
+  return (mergedScopes(inspected) ?? {}) as RateOverrides;
+}
+
 export function readConfig(): Config {
   const c = vscode.workspace.getConfiguration(SECTION);
   const legacy = vscode.workspace.getConfiguration(LEGACY_SECTION);

@@ -264,9 +264,9 @@ function summarizeSessions(sessions: Record<string, SessionRecord>, month: strin
   return rows.sort((a, b) => b.cost - a.cost || sessionTokens(b) - sessionTokens(a) || b.last - a.last);
 }
 
-const hasUsage = (day: DayRecord): boolean => Object.values(day).some((byModel) => Object.values(byModel ?? {}).some((b) => b.requests > 0));
+const hasUsage = (day: DayRecord): boolean => Object.values(day).some((byModel) => Object.values(byModel ?? {}).some(bucketHasUsage));
 
-/** The months worth offering in the month switcher: those with recorded requests, plus `extra`. Oldest first. */
+/** The months worth offering in the month switcher: those with requests or tokens, plus `extra`. Oldest first. */
 function monthsWithUsage(days: Record<string, DayRecord>, ...extra: string[]): string[] {
   const months = new Set(extra);
   for (const [day, record] of Object.entries(days)) {
@@ -355,7 +355,7 @@ export function summarize({ days, sessions, firstDay, health, sourceHealth, lega
 
   const [year, mon] = month.split('-').map(Number);
   const daysInMonth = new Date(Date.UTC(year, mon, 0)).getUTCDate();
-  const recorded = SOURCES.filter((source) => Object.values(days).some((record) => Object.values(record[source] ?? {}).some((b) => b.requests > 0)));
+  const recorded = SOURCES.filter((source) => Object.values(days).some((record) => Object.values(record[source] ?? {}).some(bucketHasUsage)));
 
   const tokensTotal = tokensBucket.input + tokensBucket.cacheRead + tokensBucket.cacheWrite + tokensBucket.cacheWrite1h + tokensBucket.output;
   const todayTokens = todayBucket.input + todayBucket.cacheRead + todayBucket.cacheWrite + todayBucket.cacheWrite1h + todayBucket.output;

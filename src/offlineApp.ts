@@ -40,15 +40,16 @@ declare const MessageEvent: new (type: string, init?: { data?: unknown }) => unk
   );
 
   let current = summaryFor();
-  viewMonth = pinnedMonth(undefined, current.months, current.month);
+  const currentMonth = current.month;
+  const months = current.months;
 
   const emit = (data: unknown) => {
     window.dispatchEvent(new MessageEvent('message', { data }));
   };
 
   const pushBody = () => {
+    viewMonth = pinnedMonth(viewMonth, months, currentMonth);
     current = summaryFor(viewMonth);
-    viewMonth = pinnedMonth(viewMonth, current.months, current.month);
     const html = renderBody(current, cfg, view, renderOpts);
     emit({ type: 'render', theme: dashboardTheme(cfg.dashboardTheme), html });
   };
@@ -75,7 +76,7 @@ declare const MessageEvent: new (type: string, init?: { data?: unknown }) => unk
         pushBody();
       } else if (msg.type === 'setMonth') {
         view = { ...view, page: 0 };
-        viewMonth = pinnedMonth(msg.month, current.months, current.month);
+        viewMonth = pinnedMonth(msg.month, months, currentMonth);
         pushBody();
       } else if (msg.type === 'setSessionView') {
         view = sessionView(msg.view);

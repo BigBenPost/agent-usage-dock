@@ -33,6 +33,8 @@ export interface UsageRecord {
     kind: 'transcript' | 'database'; revision: number; parserVersion: number; rawModel?: string;
     /** The model observation when it came from a different Antigravity record than the counters. */
     antigravityModel?: { kind: 'transcript' | 'database'; revision: number; parserVersion: number };
+    /** Revision of conversation_summaries.db that supplied title/project, independent of token evidence. */
+    antigravityMetadataAt?: number;
     /** Verified settlement identities for one DSH call, retained across archive recovery. */
     dshCall?: { version: 1; sequences: number[] };
     /** Cumulative thread total that ties a Codex response to its compatibility event. */

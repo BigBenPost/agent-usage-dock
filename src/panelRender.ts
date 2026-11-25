@@ -721,9 +721,10 @@ function exportStamp(iso: string): string {
 export function renderBody(s: Summary, cfg: Config, view = sessionView(undefined), options?: RenderOptions): string {
   const since = text(s.firstDay);
   const offline = options?.offline;
+  const contact = `<div class="sub">Have a problem? Contact <a href="mailto:${CONTACT_EMAIL}" data-focus="contact">${CONTACT_EMAIL}</a></div>`;
   const meta = offline
-    ? `<div class="sub">Offline snapshot · exported ${esc(exportStamp(offline.exportedAt))}</div>${since ? `<div class="sub">Estimate from logs tracked since ${esc(since)}</div>` : ''}<div class="sub">Have a problem? Contact <a href="mailto:${CONTACT_EMAIL}" data-focus="contact">${CONTACT_EMAIL}</a></div>`
-    : `<div class="sub">Estimate from this machine's logs${since ? `, tracked since ${esc(since)}` : ''}</div><div class="sub">Have a problem? Contact <a href="mailto:${CONTACT_EMAIL}" data-focus="contact">${CONTACT_EMAIL}</a></div><button type="button" class="linkbtn" data-action="configure-rates" data-focus="configure-rates">Configure rates</button>`;
+    ? `<div class="sub">Offline snapshot · exported ${esc(exportStamp(offline.exportedAt))}</div>${since ? `<div class="sub">Estimate from logs tracked since ${esc(since)}</div>` : ''}${contact}`
+    : `<div class="sub">Estimate from this machine's logs${since ? `, tracked since ${esc(since)}` : ''}</div>${contact}<button type="button" class="linkbtn" data-action="configure-rates" data-focus="configure-rates">Configure rates</button>`;
   return `<div class="page">
 <header class="top">
   <div><h1>${GEMINI_ICON}<span class="usage">agent-usage-dock</span></h1>${monthNav(s)}<div class="sub">${monthRange(s.month, s.daysInMonth)} · billing cycle UTC${s.isCurrent ? '' : ' · priced at the current rates'}</div></div>

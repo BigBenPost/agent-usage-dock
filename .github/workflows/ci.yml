@@ -37,10 +37,10 @@ jobs:
             test-args: --max-skipped 0
           - os: windows-latest
             node: 22
-            # 13 intentional Windows skips: 9 symlink tests (symlinks.test.ts + antigravityDb.test.ts),
+            # 15 intentional Windows skips: 10 symlink tests (including dshLinks.test.ts),
             # 3 POSIX chmod/mode tests (cli.test.ts, reviewIntegrity.test.ts, reviewRegressions.test.ts),
-            # and 1 sqlite3 CLI fallback test when sqlite3 is not installed (reliability.test.ts).
-            test-args: --max-skipped 13
+            # 1 relocation symlink test (release131.test.ts), and 1 sqlite3 CLI fallback test when sqlite3 is not installed (reliability.test.ts).
+            test-args: --max-skipped 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -51,15 +51,24 @@ jobs:
           cache: npm
       - run: npm ci
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y sqlite3
+        run: sudo apt-get update && sudo apt-get install -y sqlite3 python3-venv
       - if: matrix.node != 22
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ matrix.node }}
       - run: npm run check
+      # Tests build their offline fixture from source, without a prior dist/.
+      - run: npm test -- ${{ matrix.test-args }}
       - run: npm run build
       - run: npm run smoke
-      - run: npm test -- ${{ matrix.test-args }}
+      - if: matrix.os == 'ubuntu-latest' && matrix.node == 22
+        run: |
+          python3 -m venv /tmp/dock-browser
+          /tmp/dock-browser/bin/pip install playwright==1.60.0
+          if ! command -v google-chrome >/dev/null 2>&1 && ! command -v chromium >/dev/null 2>&1 && ! command -v chromium-browser >/dev/null 2>&1; then
+            /tmp/dock-browser/bin/python -m playwright install --with-deps chromium
+          fi
+          /tmp/dock-browser/bin/python -B tools/browser_test_dashboard.py
 
   package:
     runs-on: ubuntu-latest

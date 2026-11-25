@@ -86,6 +86,7 @@ function goodEntries(): Record<string, Buffer> {
     'extension/changelog.md': CHANGELOG,
     'extension/dist/cli.js': bundle('cli'),
     'extension/dist/dshWorker.js': bundle('worker'),
+    'extension/dist/usageWorker.js': bundle('usageWorker'),
     'extension/dist/extension.js': bundle('extension'),
     'extension/dist/offline.js': Buffer.from('(() => {})();\n'),
     'extension/LICENSE.txt': Buffer.from('License'),
@@ -115,7 +116,7 @@ const changed = (name: string, data: Buffer | string) => ({ ...goodEntries(), [n
 test('a package with exactly the expected files passes, whether the entries are deflated or stored', async () => {
   const deflated = await check(goodEntries());
   assert.equal(deflated.status, 0, deflated.stderr);
-  assert.match(deflated.stdout, /^VSIX OK: fake-ext-9\.9\.9\.vsix, 13 files/);
+  assert.match(deflated.stdout, /^VSIX OK: fake-ext-9\.9\.9\.vsix, 14 files/);
   const stored = await check(goodEntries(), { stored: Object.keys(goodEntries()) });
   assert.equal(stored.status, 0, stored.stderr);
 });
