@@ -1,0 +1,12 @@
+.github/**
+src/**
+test/**
+tools/**
+out/**
+node_modules/**
+tsconfig*.json
+esbuild.mjs
+.gitignore
+**/*.map
+**/media/hero/**
+**/media/readme/**

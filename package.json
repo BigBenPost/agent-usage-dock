@@ -1,0 +1,346 @@
+{
+  "name": "agent-usage-dock",
+  "displayName": "agent-usage-dock",
+  "description": "Local agent usage, cost estimates and shared budget for Antigravity, DSH, Claude Code and Codex",
+  "version": "1.3.0",
+  "publisher": "zhang-xijue",
+  "author": {
+    "name": "Zhang Xijue",
+    "email": "xijue.zhang@rakuten.com"
+  },
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "bugs": {
+    "email": "xijue.zhang@rakuten.com"
+  },
+  "icon": "media/icon.png",
+  "engines": {
+    "vscode": "^1.85.0",
+    "node": ">=18"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "token usage",
+    "cost estimate",
+    "budget",
+    "claude code",
+    "codex",
+    "antigravity",
+    "gemini",
+    "dsh",
+    "deepseek"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "agent-usage-dock reads agent logs and keeps its ledger in files on the machine that runs the editor, which a virtual workspace does not provide."
+    }
+  },
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "agyTokenTracker.refresh",
+        "title": "agent-usage-dock: Refresh Now"
+      },
+      {
+        "command": "agyTokenTracker.openPanel",
+        "title": "agent-usage-dock: Open Dashboard"
+      },
+      {
+        "command": "agyTokenTracker.setBudget",
+        "title": "agent-usage-dock: Set Monthly Budget"
+      },
+      {
+        "command": "agyTokenTracker.configureRates",
+        "title": "agent-usage-dock: Configure Rates"
+      },
+      {
+        "command": "agyTokenTracker.exportCsv",
+        "title": "agent-usage-dock: Export CSV"
+      },
+      {
+        "command": "agyTokenTracker.exportOfflineHtml",
+        "title": "agent-usage-dock: Export Offline HTML"
+      },
+      {
+        "command": "agyTokenTracker.rebuildHistory",
+        "title": "agent-usage-dock: Rebuild History"
+      }
+    ],
+    "icons": {
+      "agy-gemini": {
+        "description": "Google Gemini icon",
+        "default": {
+          "fontPath": "./media/gemini.woff",
+          "fontCharacter": "\\E900"
+        }
+      },
+      "agy-ring-ok": {
+        "description": "Budget level below the warning threshold: a green ring with a dot",
+        "default": {
+          "fontPath": "./media/gemini.woff",
+          "fontCharacter": "\\E902"
+        }
+      },
+      "agy-ring-warning": {
+        "description": "Budget level from the warning threshold: an amber ring with a dot",
+        "default": {
+          "fontPath": "./media/gemini.woff",
+          "fontCharacter": "\\E903"
+        }
+      },
+      "agy-ring-critical": {
+        "description": "Budget level from the critical threshold: a red ring with a dot",
+        "default": {
+          "fontPath": "./media/gemini.woff",
+          "fontCharacter": "\\E904"
+        }
+      },
+      "agy-bar-ok": {
+        "description": "Budget level below the warning threshold: a green bar",
+        "default": {
+          "fontPath": "./media/gemini.woff",
+          "fontCharacter": "\\E905"
+        }
+      },
+      "agy-bar-warning": {
+        "description": "Budget level from the warning threshold: an amber bar",
+        "default": {
+          "fontPath": "./media/gemini.woff",
+          "fontCharacter": "\\E906"
+        }
+      },
+      "agy-bar-critical": {
+        "description": "Budget level from the critical threshold: a red bar",
+        "default": {
+          "fontPath": "./media/gemini.woff",
+          "fontCharacter": "\\E907"
+        }
+      }
+    },
+    "configuration": {
+      "title": "agent-usage-dock",
+      "properties": {
+        "agyTokenTracker.antigravityHome": {
+          "type": "string",
+          "default": "",
+          "description": "Custom path to Google Antigravity data directory (default: ~/.gemini/antigravity).",
+          "scope": "machine"
+        },
+        "agyTokenTracker.dashboardTheme": {
+          "type": "string",
+          "enum": [
+            "light",
+            "auto",
+            "dark"
+          ],
+          "enumDescriptions": [
+            "Always light, whatever the editor theme.",
+            "Follow the editor theme.",
+            "Always dark."
+          ],
+          "default": "light",
+          "description": "Colour scheme of the dashboard."
+        },
+        "agyTokenTracker.timeZone": {
+          "type": "string",
+          "enum": [
+            "UTC",
+            "SGT"
+          ],
+          "enumDescriptions": [
+            "UTC.",
+            "Singapore time, UTC+8."
+          ],
+          "default": "SGT",
+          "description": "Time zone of the times on session cards and in the session popup. Only those change: billing months and days stay UTC."
+        },
+        "agyTokenTracker.statusBarStyle": {
+          "type": "string",
+          "enum": [
+            "percent",
+            "gauge",
+            "ring"
+          ],
+          "enumDescriptions": [
+            "Today, the month and the percentage of the budget used: 240k | 5.2M · 61%.",
+            "A block that rises in eighths with the budget used, in front of the amounts: ▅ 240k | 5.2M.",
+            "A ring that fills in quarters with the budget used, in front of the amounts: ◑ 240k | 5.2M."
+          ],
+          "default": "percent",
+          "description": "What the status bar item shows about the budget."
+        },
+        "agyTokenTracker.levelIndicator": {
+          "type": "string",
+          "enum": [
+            "bar",
+            "ring"
+          ],
+          "enumDescriptions": [
+            "A thin bar in front of the mark, as tall as the status bar: green below the warning threshold, amber from it, red from the critical one.",
+            "A ring with a dot after the text, in the same three colours."
+          ],
+          "default": "bar",
+          "description": "How the status bar shows how close the month is to the budget. Both are colour glyphs inside the one status bar item. Nothing is shown when no budget is set."
+        },
+        "agyTokenTracker.tooltipChart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Draw the daily chart in the status bar tooltip. Turn off to show two lines of text instead, for editors that do not draw images in hovers."
+        },
+        "agyTokenTracker.tokenBudgetLimit": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Monthly token budget cap in millions of tokens (e.g. 50 = 50M tokens). 0 turns the token budget off."
+        },
+        "agyTokenTracker.budgetLimit": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Monthly budget cap in dollars. 0 turns the budget off."
+        },
+        "agyTokenTracker.warningThreshold": {
+          "type": "number",
+          "default": 0.75,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Fraction of budget (0-1) from which the level indicator in the status bar is amber. It is green below."
+        },
+        "agyTokenTracker.criticalThreshold": {
+          "type": "number",
+          "default": 0.9,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Fraction of budget (0-1) from which the level indicator in the status bar is red."
+        },
+        "agyTokenTracker.pollIntervalSeconds": {
+          "type": "number",
+          "default": 60,
+          "minimum": 15,
+          "maximum": 86400,
+          "description": "How often to read new log entries (seconds, from 15 to 86400)."
+        },
+        "agyTokenTracker.correctionFactor": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0,
+          "description": "Multiplier applied to every estimate, for calibrating against the AI Gateway dashboard."
+        },
+        "agyTokenTracker.rates": {
+          "type": "object",
+          "default": {},
+          "markdownDescription": "USD per million tokens. Override by model, tool and model (for example `codex/gpt-6.2-sol`), or provider route (for example `dsh[deepseek-account]/deepseek-v4-pro`).",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "input": {
+                "type": "number",
+                "minimum": 0
+              },
+              "cacheRead": {
+                "type": "number",
+                "minimum": 0
+              },
+              "cacheWrite": {
+                "type": "number",
+                "minimum": 0
+              },
+              "cacheWrite1h": {
+                "type": "number",
+                "minimum": 0
+              },
+              "output": {
+                "type": "number",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "agyTokenTracker.budgetMode": {
+          "type": "string",
+          "enum": [
+            "tokens",
+            "cost"
+          ],
+          "default": "tokens",
+          "description": "Metric used for the status bar and dashboard budget. Cost is an estimate at current rates, not provider credits or an invoice."
+        },
+        "agyTokenTracker.dshEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Collect local DSH v4 session logs. Disabling collection retains history and its contribution to the shared budget.",
+          "scope": "machine"
+        },
+        "agyTokenTracker.dshHome": {
+          "type": "string",
+          "default": "",
+          "description": "DSH home directory. Default: DSH_HOME or ~/.dsh. Native zstd support is required in the actual runtime.",
+          "scope": "machine"
+        },
+        "agyTokenTracker.claudeHome": {
+          "type": "string",
+          "default": "",
+          "description": "Claude Code configuration directory containing projects. Default: CLAUDE_CONFIG_DIR or ~/.claude.",
+          "scope": "machine"
+        },
+        "agyTokenTracker.codexHome": {
+          "type": "string",
+          "default": "",
+          "description": "Codex home directory containing sessions and archived_sessions. Default: CODEX_HOME or ~/.codex.",
+          "scope": "machine"
+        },
+        "agyTokenTracker.antigravityEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Collect local Antigravity logs. Disabling collection retains existing usage and its budget contribution.",
+          "scope": "machine"
+        },
+        "agyTokenTracker.claudeEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Collect local Claude Code logs. Disabling collection retains existing usage and its budget contribution.",
+          "scope": "machine"
+        },
+        "agyTokenTracker.codexEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Collect local Codex logs. Disabling collection retains existing usage and its budget contribution.",
+          "scope": "machine"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "check": "tsc --noEmit -p tsconfig.test.json",
+    "clean": "node tools/clean.mjs",
+    "test": "node tools/clean.mjs out && tsc -p tsconfig.test.json && node tools/test.mjs",
+    "smoke": "node tools/smoke-bundle.mjs",
+    "package": "node tools/clean.mjs dist && node esbuild.mjs && vsce package --no-dependencies --allow-missing-repository --no-rewrite-relative-links",
+    "check:vsix": "node tools/check-vsix.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "~18.19.130",
+    "@types/vscode": "1.85.0",
+    "@vscode/vsce": "4.1.1",
+    "esbuild": "0.28.2",
+    "linkedom": "0.18.12",
+    "typescript": "^5.3.0"
+  },
+  "overrides": {
+    "@vscode/vsce": {
+      "minimatch": "11.0.9"
+    }
+  }
+}

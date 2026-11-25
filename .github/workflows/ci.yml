@@ -1,0 +1,78 @@
+name: Dock checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    env:
+      AGY_TEST_REQUIRE_SQLITE: ${{ matrix.os != 'windows-latest' && '1' || '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            node: 18
+            test-args: ''
+          - os: ubuntu-latest
+            node: 22
+            test-args: --max-skipped 0
+          - os: macos-latest
+            node: 22
+            test-args: --max-skipped 0
+          - os: windows-latest
+            node: 22
+            # 13 intentional Windows skips: 9 symlink tests (symlinks.test.ts + antigravityDb.test.ts),
+            # 3 POSIX chmod/mode tests (cli.test.ts, reviewIntegrity.test.ts, reviewRegressions.test.ts),
+            # and 1 sqlite3 CLI fallback test when sqlite3 is not installed (reliability.test.ts).
+            test-args: --max-skipped 13
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y sqlite3
+      - if: matrix.node != 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm run check
+      - run: npm run build
+      - run: npm run smoke
+      - run: npm test -- ${{ matrix.test-args }}
+
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm audit --omit=dev
+      - run: npm run package
+      - run: npm run check:vsix
